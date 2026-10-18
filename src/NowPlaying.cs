@@ -66,6 +66,7 @@ namespace Glasswing
 
         public override void SetHidden(bool hide) { hidden = hide; if (Running) card.SyncVisible(); }
         public override void GlassChanged() { if (Running) card.ApplyGlass(); }
+        public override bool HasGlass => true;
         public override void ResetPosition() { if (Running) card.ResetPosition(); }
 
         public override IEnumerable<Row> Rows()

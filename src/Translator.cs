@@ -460,6 +460,7 @@ namespace Glasswing
         }
 
         public override void GlassChanged() { if (card != null && !card.IsDisposed) card.ApplyGlass(); }
+        public override bool HasGlass => true;
 
         // Щелчок по «Показать пример» и пункт в трее: переводим то, что уже скопировано.
         public void TranslateClipboard() { Open(KeyTools.ClipText(), false); }
@@ -577,7 +578,7 @@ namespace Glasswing
         public void ApplyGlass()
         {
             if (!IsHandleCreated) return;
-            noGlass = !Ui.ApplyGlass(Handle, App.Glass == "Чистое стекло" || App.Glass == "Лёгкое размытие" ? "Матовое" : App.Glass);
+            noGlass = !Ui.ApplyGlass(Handle, mod.Glass == "Чистое стекло" || mod.Glass == "Лёгкое размытие" ? "Матовое" : mod.Glass);
             Invalidate();
         }
 

@@ -107,11 +107,54 @@ namespace Glasswing
             }
         }
 
-        // Перетаскивание окна за любое место.
+        [StructLayout(LayoutKind.Sequential)] struct MSG { public IntPtr hwnd; public int message; public IntPtr wParam; public IntPtr lParam; public int time; public int x, y; }
+        [DllImport("user32.dll")] static extern int GetMessage(out MSG m, IntPtr h, int min, int max);
+        [DllImport("user32.dll")] static extern bool TranslateMessage(ref MSG m);
+        [DllImport("user32.dll")] static extern IntPtr DispatchMessage(ref MSG m);
+        [DllImport("user32.dll")] static extern void PostQuitMessage(int code);
+        [DllImport("user32.dll")] static extern IntPtr SetCapture(IntPtr h);
+        [DllImport("user32.dll")] static extern IntPtr GetCapture();
+
+        // Перетаскивание окна за любое место. Двигаем сами, а не системным циклом переноса
+        // (WM_NCLBUTTONDOWN + HTCAPTION): с ним стеклянные окна моргают, пока их тащат.
+        // Как и системный цикл, возвращается после отпускания кнопки и само отпускание съедает.
         public static void DragWindow(Form f)
         {
-            ReleaseCapture();
-            SendMessage(f.Handle, 0xA1, (IntPtr)2, IntPtr.Zero);
+            IntPtr h = f.Handle;
+            Point start = Cursor.Position, origin = f.Location, last = origin;
+            SetCapture(h);
+            SendMessage(h, Ui.WM_ENTERSIZEMOVE, IntPtr.Zero, IntPtr.Zero);
+            try
+            {
+                MSG m;
+                while (true)
+                {
+                    int r = GetMessage(out m, IntPtr.Zero, 0, 0);
+                    if (r == 0) { PostQuitMessage((int)m.wParam); break; }
+                    if (r < 0) break;
+                    if (m.message == 0x202) break;                                   // WM_LBUTTONUP
+                    if (m.message == 0x100 && (int)m.wParam == 0x1B)                 // Esc: вернуть на место
+                    {
+                        SetWindowPos(h, IntPtr.Zero, origin.X, origin.Y, 0, 0, 0x1 | 0x4 | 0x10);
+                        break;
+                    }
+                    if (m.message == 0x200 && m.hwnd == h)                           // WM_MOUSEMOVE
+                    {
+                        var p = Cursor.Position;
+                        var to = new Point(origin.X + p.X - start.X, origin.Y + p.Y - start.Y);
+                        if (to != last) { SetWindowPos(h, IntPtr.Zero, to.X, to.Y, 0, 0, 0x1 | 0x4 | 0x10); last = to; }
+                        continue;
+                    }
+                    TranslateMessage(ref m);
+                    DispatchMessage(ref m);
+                    if (GetCapture() != h || (Control.MouseButtons & MouseButtons.Left) == 0) break;
+                }
+            }
+            finally
+            {
+                if (GetCapture() == h) ReleaseCapture();
+                if (!f.IsDisposed) SendMessage(h, Ui.WM_EXITSIZEMOVE, IntPtr.Zero, IntPtr.Zero);
+            }
         }
 
         public static void Activate(Form f)

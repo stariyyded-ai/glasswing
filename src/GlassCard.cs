@@ -86,10 +86,17 @@ namespace Glasswing
             Settings.Set(Mod.Id, "Y", Top);
         }
 
+        protected override void WndProc(ref Message m)
+        {
+            if (!noGlass && m.Msg == Ui.WM_ENTERSIZEMOVE) Ui.GlassWhileMoving(Handle, Mod.Glass);
+            base.WndProc(ref m);
+            if (!noGlass && m.Msg == Ui.WM_EXITSIZEMOVE) ApplyGlass();
+        }
+
         public void ApplyGlass()
         {
             if (!IsHandleCreated) return;
-            noGlass = !Ui.ApplyGlass(Handle, App.Glass);
+            noGlass = !Ui.ApplyGlass(Handle, Mod.Glass);
             if (noGlass) Opacity = 0.92;
             Invalidate();
         }
@@ -149,6 +156,15 @@ namespace Glasswing
         {
             var menu = new ContextMenuStrip { Font = new Font("Segoe UI", 9.5f) };
             menu.Closed += (s, e) => BeginInvoke(new Action(menu.Dispose));
+            var own = new ToolStripMenuItem("Стекло этого виджета");
+            own.DropDownItems.Add(new ToolStripMenuItem(Module.SameGlass + " (" + App.Glass + ")", null, (s, e) => Mod.OwnGlass = "") { Checked = Mod.OwnGlass.Length == 0 });
+            own.DropDownItems.Add(new ToolStripSeparator());
+            foreach (var name in Ui.GlassNames)
+            {
+                var n = name;
+                own.DropDownItems.Add(new ToolStripMenuItem(n, null, (s, e) => Mod.OwnGlass = n) { Checked = n == Mod.OwnGlass });
+            }
+            menu.Items.Add(own);
             var glass = new ToolStripMenuItem("Стекло для всех виджетов");
             foreach (var name in Ui.GlassNames)
             {

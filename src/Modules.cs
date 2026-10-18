@@ -73,6 +73,33 @@ namespace Glasswing
         public abstract void Stop();
         public virtual void SetHidden(bool hidden) { }
         public virtual void GlassChanged() { }
+
+        // Своё стекло у виджета; пусто значит «как у всех» (App.Glass).
+        public virtual bool HasGlass => false;
+
+        public string OwnGlass
+        {
+            get { var g = Settings.GetString(Id, "Glass", ""); return Array.IndexOf(Ui.GlassNames, g) >= 0 ? g : ""; }
+            set { Settings.Set(Id, "Glass", value ?? ""); GlassChanged(); }
+        }
+
+        public string Glass => OwnGlass.Length > 0 ? OwnGlass : App.Glass;
+
+        public const string SameGlass = "Как у всех";
+
+        public Row GlassRow()
+        {
+            return new Row
+            {
+                Label = "Стекло",
+                Value = () => OwnGlass.Length > 0 ? OwnGlass : SameGlass,
+                Click = () =>
+                {
+                    int i = Array.IndexOf(Ui.GlassNames, OwnGlass);   // -1 = как у всех
+                    OwnGlass = i + 1 < Ui.GlassNames.Length ? Ui.GlassNames[i + 1] : "";
+                },
+            };
+        }
         public virtual bool CanReset => false;
         public virtual void ResetPosition() { }
         public virtual IEnumerable<Row> Rows() { yield break; }
@@ -129,6 +156,7 @@ namespace Glasswing
 
         public override void SetHidden(bool hidden) { if (Running) card.Visible = !hidden; }
         public override void GlassChanged() { if (Running) card.ApplyGlass(); }
+        public override bool HasGlass => true;
         public override void ResetPosition() { if (Running) card.ResetPosition(); }
 
         public override IEnumerable<Row> Rows()

@@ -54,6 +54,14 @@ namespace Glasswing
             Invalidate();
         }
 
+        // акрил моргает при переносе окна: на это время обычное размытие (см. Ui.GlassWhileMoving)
+        protected override void WndProc(ref Message m)
+        {
+            if (!noGlass && m.Msg == Ui.WM_ENTERSIZEMOVE) WNative.SetAcrylic(Handle, 3, 215, 18, 21, 30);
+            base.WndProc(ref m);
+            if (!noGlass && m.Msg == Ui.WM_EXITSIZEMOVE) WNative.SetAcrylic(Handle, 4, 215, 18, 21, 30);
+        }
+
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
@@ -300,6 +308,7 @@ namespace Glasswing
             {
                 // строки сжимаются, если вместе с кнопкой сброса не помещаются над блоком стекла
                 var rows = cur.Rows().ToList();
+                if (cur.HasGlass) rows.Add(cur.GlassRow());
                 bool reset = cur.CanReset && cur.Running;
                 int room = ch - S(118) - S(20) - y - (reset ? S(48) : 0);
                 int step = rows.Count == 0 ? S(60) : Math.Max(S(30), Math.Min(S(60), room / rows.Count));

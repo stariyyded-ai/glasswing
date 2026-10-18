@@ -11,7 +11,7 @@ namespace Glasswing
     class App
     {
         public const string Name = "Glasswing";
-        public const string Version = "1.4.1";
+        public const string Version = "1.4.2";
         public const string ShowEventName = @"Local\Glasswing_Show";
         public const string ExitEventName = @"Local\Glasswing_Exit";
 
@@ -116,6 +116,9 @@ namespace Glasswing
 
         public void SetGlass(string name)
         {
+            // «для всех» значит для всех: своё стекло у виджетов сбрасывается
+            foreach (var m in Modules.Concat(Modules.Where(x => x.Tabs != null).SelectMany(x => x.Tabs)))
+                if (m.OwnGlass.Length > 0) Settings.Set(m.Id, "Glass", "", false);
             Settings.Set("app", "Glass", name);
             foreach (var m in Modules) m.GlassChanged();
             if (center != null && !center.IsDisposed) center.Invalidate();

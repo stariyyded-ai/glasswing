@@ -55,6 +55,7 @@ namespace Glasswing
 
         public override void SetHidden(bool hidden) { if (Running) card.SetHidden(hidden); }
         public override void GlassChanged() { if (Running) card.ApplyGlass(); }
+        public override bool HasGlass => true;
         public override void ResetPosition() { if (Running) card.ResetPosition(); }
 
         // У прежнего виджета своих настроек не было: только «поверх окон» и «закрепить».

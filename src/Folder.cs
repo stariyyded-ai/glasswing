@@ -230,6 +230,7 @@ namespace Glasswing
 
         public override void SetHidden(bool hide) { hidden = hide; foreach (var c in Live()) c.SetHidden(hide); }
         public override void GlassChanged() { foreach (var c in Live()) c.ApplyGlass(); }
+        public override bool HasGlass => true;
 
         public override void ResetPosition()
         {

@@ -108,6 +108,7 @@ namespace Glasswing
 
         public override void SetHidden(bool hidden) { if (Running) card.Visible = !hidden; }
         public override void GlassChanged() { if (Running) card.ApplyGlass(); }
+        public override bool HasGlass => true;
         public override void ResetPosition() { if (Running) card.ResetPosition(); }
 
         public override IEnumerable<Row> Rows()
@@ -241,11 +242,26 @@ namespace Glasswing
             rq.ReadWriteTimeout = 15000;
             rq.UserAgent = App.Name + "/" + App.Version;
             rq.Accept = "application/json";
-            rq.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+            // Без сжатия: встроенная распаковка .NET Framework ломается на части ответов
+            // («недопустимые данные при декодировании»). Если gzip всё же пришёл, распаковываем сами.
+            rq.AutomaticDecompression = DecompressionMethods.None;
+            rq.Headers[HttpRequestHeader.AcceptEncoding] = "identity";
+            byte[] body;
             using (var rs = (HttpWebResponse)rq.GetResponse())
             using (var st = rs.GetResponseStream())
-            using (var rd = new StreamReader(st, Encoding.UTF8))
-                return rd.ReadToEnd();
+            using (var ms = new MemoryStream())
+            {
+                st.CopyTo(ms);
+                body = ms.ToArray();
+            }
+            if (body.Length > 2 && body[0] == 0x1f && body[1] == 0x8b)
+                using (var gz = new System.IO.Compression.GZipStream(new MemoryStream(body), System.IO.Compression.CompressionMode.Decompress))
+                using (var ms = new MemoryStream())
+                {
+                    gz.CopyTo(ms);
+                    body = ms.ToArray();
+                }
+            return Encoding.UTF8.GetString(body);
         }
 
         static string Coord(double v) { return v.ToString("0.####", Inv); }

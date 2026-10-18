@@ -161,6 +161,7 @@ namespace Glasswing
 
         public override void SetHidden(bool hide) { hidden = hide; if (Running) card.SetHidden(hide); }
         public override void GlassChanged() { if (Running) card.ApplyGlass(); }
+        public override bool HasGlass => true;
         public override void ResetPosition() { if (Running) { card.SetExpanded(false); card.ResetPosition(); } }
 
         static string Games(int n)

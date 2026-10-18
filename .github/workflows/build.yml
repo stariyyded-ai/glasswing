@@ -40,14 +40,24 @@ jobs:
             out/Glasswing.exe
             out/Glasswing.exe.sha256
 
+      # Релиз выходит сам, когда в main попадает новая версия в src/App.cs
+      # и рядом лежат её заметки releases/v<версия>.md. Тег создаёт gh.
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="${GITHUB_REF_NAME}"
-          ver="${tag#v}"
-          grep -q "Version = \"$ver\"" src/App.cs || { echo "App.Version does not match tag $tag"; exit 1; }
+          ver=$(grep -oP 'Version = "\K[^"]+' src/App.cs)
+          tag="v$ver"
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "$tag" ]]; then
+            echo "App.Version $ver does not match tag $GITHUB_REF_NAME"; exit 1
+          fi
           notes="releases/$tag.md"
+          if [[ "$GITHUB_REF" != refs/tags/* && ! -f "$notes" ]]; then
+            echo "No $notes, not releasing $tag"; exit 0
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists"; exit 0
+          fi
           [ -f "$notes" ] || notes=/dev/null
-          gh release create "$tag" out/Glasswing.exe out/Glasswing.exe.sha256 --title "Glasswing $ver" --notes-file "$notes"
+          gh release create "$tag" out/Glasswing.exe out/Glasswing.exe.sha256 --target "$GITHUB_SHA" --title "Glasswing $ver" --notes-file "$notes"

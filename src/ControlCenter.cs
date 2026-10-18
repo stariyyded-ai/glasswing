@@ -41,8 +41,15 @@ namespace Glasswing
             }
         }
 
+        // Часть виджета (вкладка) открывает своего родителя на этой вкладке.
         public void Select(Module m)
         {
+            if (m != null && m.Parent != null)
+            {
+                int i = Array.IndexOf(m.Parent.Tabs, m);
+                if (i >= 0) m.Parent.TabIndex = i;
+                m = m.Parent;
+            }
             if (m != null) sel = m;
             Invalidate();
         }
@@ -160,6 +167,41 @@ namespace Glasswing
                         g.DrawLine(p, 8, 10.5f, 8, 14.5f);
                         using (var b = new SolidBrush(Color.White)) { g.FillEllipse(b, 14.2f, 9.8f, 2.4f, 2.4f); g.FillEllipse(b, 16.6f, 12.6f, 2.4f, 2.4f); }
                         break;
+                    case IconKind.Overlay:
+                        foreach (var c in new[] { new PointF(3.5f, 3.5f), new PointF(13.5f, 3.5f), new PointF(3.5f, 13.5f), new PointF(13.5f, 13.5f) })
+                            using (var sq = Ui.Round(new RectangleF(c.X, c.Y, 7, 7), 2)) g.DrawPath(p, sq);
+                        break;
+                    case IconKind.Folder:
+                        using (var fp = new GraphicsPath())
+                        {
+                            fp.AddLines(new[] { new PointF(3, 18), new PointF(3, 6.5f), new PointF(4.5f, 5), new PointF(9, 5), new PointF(11, 7),
+                                new PointF(19.5f, 7), new PointF(21, 8.5f), new PointF(21, 17.5f), new PointF(19.5f, 19), new PointF(4.5f, 19) });
+                            fp.CloseFigure();
+                            g.DrawPath(p, fp);
+                        }
+                        break;
+                    case IconKind.Weather:
+                        g.DrawArc(p, 5, 5, 7, 7, 128, 218);
+                        g.DrawLine(p, 3.2f, 8.5f, 1.8f, 8.5f);
+                        g.DrawLine(p, 4.8f, 4.8f, 3.8f, 3.8f);
+                        g.DrawLine(p, 8.5f, 3.2f, 8.5f, 1.8f);
+                        g.DrawLine(p, 12.2f, 4.8f, 13.2f, 3.8f);
+                        using (var c = new GraphicsPath())
+                        {
+                            c.AddLine(7, 19, 16.5f, 19);
+                            c.AddArc(13, 12, 7, 7, 90, -180);
+                            c.AddArc(6.5f, 8, 10, 10, 348.7f, -158.2f);
+                            c.AddArc(3.5f, 12, 7, 7, 260, -170);
+                            c.CloseFigure();
+                            g.DrawPath(p, c);
+                        }
+                        break;
+                    case IconKind.Todo:
+                        g.DrawLines(p, new[] { new PointF(3.5f, 7.5f), new PointF(5.5f, 9.5f), new PointF(9, 5.5f) });
+                        g.DrawLine(p, 12.5f, 7.5f, 20.5f, 7.5f);
+                        g.DrawEllipse(p, 4, 14, 5, 5);
+                        g.DrawLine(p, 12.5f, 16.5f, 20.5f, 16.5f);
+                        break;
                 }
             }
             g.Restore(st);
@@ -171,35 +213,46 @@ namespace Glasswing
             Line(g, sw, S(48), sw, ch);
             Ui.Text2(g, "ВИДЖЕТЫ", Ui.Font(11, true), Ui.Faint, new RectangleF(S(22), S(58), S(200), S(22)), Ui.Left);
             int y = S(84);
+            var foot = new Rectangle(S(12), ch - S(122), sw - S(24), S(106));
+            // при большом числе виджетов строки становятся ниже, чтобы не залезть на нижний блок
+            int step = Math.Min(S(60), (foot.Y - S(8) - y) / Math.Max(1, App.Core.Modules.Count));
+            int rh = step - S(4), dy = (rh - S(56)) / 2;
             foreach (var m in App.Core.Modules)
             {
                 var mod = m;
-                var row = new Rectangle(S(12), y, sw - S(24), S(56));
+                var row = new Rectangle(S(12), y, sw - S(24), rh);
                 bool active = mod == sel;
                 if (active) Ui.FillRound(g, row, S(10), Ui.PanelHi);
                 else if (hover == "row:" + mod.Id) Ui.FillRound(g, row, S(10), Ui.Panel);
                 bool on = mod.Ported && mod.Enabled;
-                var tile = new RectangleF(row.X + S(10), row.Y + S(11), S(34), S(34));
+                var tile = new RectangleF(row.X + S(10), row.Y + S(11) + dy, S(34), S(34));
                 Ui.FillRound(g, tile, S(9), Color.FromArgb(on ? 36 : 14, 255, 255, 255));
                 DrawIcon(g, mod.Icon, new RectangleF(tile.X + S(8), tile.Y + S(8), S(18), S(18)));
                 float tx = tile.Right + S(12);
                 float tw = row.Right - S(64) - tx;
-                Ui.Text2(g, mod.Name, Ui.Font(14, true), mod.Ported ? Ui.Text : Ui.Muted, new RectangleF(tx, row.Y + S(8), tw, S(22)), Ui.Left);
-                Ui.Text2(g, mod.Ported ? mod.Short : "Скоро переедет", Ui.Font(12), Ui.Faint, new RectangleF(tx, row.Y + S(29), tw, S(18)), Ui.Left);
+                Ui.Text2(g, mod.Name, Ui.Font(14, true), mod.Ported ? Ui.Text : Ui.Muted, new RectangleF(tx, row.Y + S(8) + dy, tw, S(22)), Ui.Left);
+                Ui.Text2(g, mod.Ported ? mod.Short : "Скоро переедет", Ui.Font(12), Ui.Faint, new RectangleF(tx, row.Y + S(29) + dy, tw, S(18)), Ui.Left);
                 hits.Add(row, "row:" + mod.Id, () => Select(mod));
-                var tg = new Rectangle(row.Right - S(54), row.Y + S(16), S(44), S(24));
+                var tg = new Rectangle(row.Right - S(54), row.Y + (rh - S(24)) / 2, S(44), S(24));
                 Ui.Toggle(g, tg, on, mod.Ported);
                 if (mod.Ported) hits.Add(tg, "tg:" + mod.Id, () => { App.Core.SetEnabled(mod, !mod.Enabled); Select(mod); });
-                y += S(60);
+                y += step;
             }
 
-            var foot = new Rectangle(S(12), ch - S(80), sw - S(24), S(64));
             Ui.FillRound(g, foot, S(10), Ui.Panel);
-            Ui.Text2(g, "Запускать вместе с Windows", Ui.Font(13, true), Ui.Text, new RectangleF(foot.X + S(14), foot.Y + S(10), foot.Width - S(80), S(22)), Ui.Left);
-            Ui.Text2(g, "Версия " + App.Version, Ui.Font(12), Ui.Faint, new RectangleF(foot.X + S(14), foot.Y + S(32), foot.Width - S(80), S(20)), Ui.Left);
-            var at = new Rectangle(foot.Right - S(56), foot.Y + S(20), S(44), S(24));
+            var lf = Ui.Font(13, true);
+            Ui.Text2(g, "Запускать вместе с Windows", lf, Ui.Text, new RectangleF(foot.X + S(14), foot.Y + S(8), foot.Width - S(80), S(28)), Ui.Left);
+            var at = new Rectangle(foot.Right - S(56), foot.Y + S(10), S(44), S(24));
             Ui.Toggle(g, at, Installer.Autostart);
             hits.Add(at, "auto", () => { Installer.Autostart = !Installer.Autostart; Invalidate(); });
+            Ui.Text2(g, "Обновляться автоматически", lf, Ui.Text, new RectangleF(foot.X + S(14), foot.Y + S(40), foot.Width - S(80), S(28)), Ui.Left);
+            var ut = new Rectangle(foot.Right - S(56), foot.Y + S(42), S(44), S(24));
+            Ui.Toggle(g, ut, Updater.Auto);
+            hits.Add(ut, "upd", () => { Updater.Auto = !Updater.Auto; Invalidate(); });
+            string ver = "Версия " + App.Version + (Updater.Status.Length > 0 ? " · " + Updater.Status : "");
+            var vr = new RectangleF(foot.X + S(14), foot.Y + S(74), foot.Width - S(28), S(22));
+            Ui.Text2(g, ver, Ui.Font(12), Ui.Faint, vr, Ui.Left);
+            hits.Add(Rectangle.Round(vr), "ver", () => Updater.Check(true));
         }
 
         void DrawDetails(Graphics g, int cw, int ch)
@@ -216,12 +269,24 @@ namespace Glasswing
             Ui.Text2(g, badge, bf, running ? Ui.AccentInk : Ui.Muted, br, Ui.Center);
 
             Ui.Text2(g, m.Name, Ui.Font(26, true), Ui.Text, new RectangleF(x, S(68), w - bw - S(16), S(40)), Ui.Left);
+            // описание переносим сами: каждая строка меряется и рисуется одним и тем же форматом,
+            // поэтому строки не наезжают друг на друга и не обрезаются ни при каком DPI
             var df = Ui.Font(14);
             float dw = Math.Min(w - bw - S(16), S(540));
-            float dh = Math.Min(S(64), g.MeasureString(m.Description, df, (int)dw).Height + S(2));
-            Ui.Text2(g, m.Description, df, Ui.Muted, new RectangleF(x, S(112), dw, dh), Ui.Wrap);
+            int lh = (int)Math.Ceiling(df.GetHeight(g)) + S(3);
+            var lines = WrapLines(g, m.Description, df, dw, 3);
+            for (int li = 0; li < lines.Count; li++)
+                Ui.Text2(g, lines[li], df, Ui.Muted, new RectangleF(x, S(112) + li * lh, dw, lh), Ui.Left);
 
-            int y = S(112) + (int)dh + S(24);
+            int y = S(112) + lines.Count * lh + S(20);
+            var tabs = m.Ported ? m.Tabs : null;
+            var cur = m;
+            if (tabs != null && tabs.Length > 0)
+            {
+                m.TabIndex = Math.Max(0, Math.Min(tabs.Length - 1, m.TabIndex));
+                cur = tabs[m.TabIndex];
+                y = DrawTabs(g, m, tabs, x, y, w) + S(10);
+            }
             if (!m.Ported)
             {
                 var info = new Rectangle(x, y, w, S(76));
@@ -234,10 +299,10 @@ namespace Glasswing
             else
             {
                 // строки сжимаются, если вместе с кнопкой сброса не помещаются над блоком стекла
-                var rows = m.Rows().ToList();
-                bool reset = m.CanReset && m.Running;
+                var rows = cur.Rows().ToList();
+                bool reset = cur.CanReset && cur.Running;
                 int room = ch - S(118) - S(20) - y - (reset ? S(48) : 0);
-                int step = rows.Count == 0 ? S(60) : Math.Max(S(44), Math.Min(S(60), room / rows.Count));
+                int step = rows.Count == 0 ? S(60) : Math.Max(S(30), Math.Min(S(60), room / rows.Count));
                 int rh = step - S(10) * step / S(60);
                 int i = 0;
                 foreach (var r in rows)
@@ -270,7 +335,7 @@ namespace Glasswing
                     Ui.FillRound(g, b, b.Height / 2f, hover == "reset" ? Ui.PanelHi : Ui.Panel);
                     Ui.StrokeRound(g, b, b.Height / 2f, Color.FromArgb(36, 255, 255, 255));
                     Ui.Text2(g, label, bf2, Ui.Text, b, Ui.Center);
-                    hits.Add(b, "reset", () => m.ResetPosition());
+                    hits.Add(b, "reset", () => cur.ResetPosition());
                 }
             }
 
@@ -290,6 +355,58 @@ namespace Glasswing
                 hits.Add(pill, "glass:" + n, () => { App.Core.SetGlass(n); Invalidate(); });
                 px = pill.Right + S(8);
             }
+        }
+
+        // Переключатель частей виджета: значок, название, подпись и точка «видно на столе».
+        int DrawTabs(Graphics g, Module m, Module[] tabs, int x, int y, int w)
+        {
+            int inset = S(5), gap = S(6), th = S(56);
+            var box = new Rectangle(x, y, w, th + 2 * inset);
+            Ui.FillRound(g, box, S(14), Ui.Panel);
+            int tw = (w - 2 * inset - gap * (tabs.Length - 1)) / tabs.Length;
+            for (int i = 0; i < tabs.Length; i++)
+            {
+                var t = tabs[i];
+                int idx = i;
+                var r = new Rectangle(x + inset + i * (tw + gap), y + inset, tw, th);
+                bool on = i == m.TabIndex;
+                string key = "tab:" + i;
+                if (on)
+                {
+                    Ui.FillRound(g, r, S(10), Color.FromArgb(31, 110, 215, 200));
+                    Ui.StrokeRound(g, r, S(10), Color.FromArgb(140, 110, 215, 200));
+                }
+                else if (hover == key) Ui.FillRound(g, r, S(10), Ui.Panel);
+                DrawIcon(g, t.Icon, new RectangleF(r.X + S(14), r.Y + (th - S(20)) / 2f, S(20), S(20)));
+                float tx = r.X + S(46), dotX = r.Right - S(22);
+                Ui.Text2(g, t.Name, Ui.Font(14, true), Ui.Text, new RectangleF(tx, r.Y + S(8), dotX - tx - S(6), S(22)), Ui.Left);
+                Ui.Text2(g, t.Short, Ui.Font(12), Ui.Faint, new RectangleF(tx, r.Y + S(29), dotX - tx - S(6), S(18)), Ui.Left);
+                bool live = m.Enabled && t.Enabled;
+                using (var b = new SolidBrush(live ? Ui.Accent : Color.FromArgb(64, 255, 255, 255)))
+                    g.FillEllipse(b, dotX, r.Y + (th - S(8)) / 2f, S(8), S(8));
+                hits.Add(r, key, () => { m.TabIndex = idx; Invalidate(); });
+            }
+            return box.Bottom;
+        }
+
+        // Перенос по словам с той же мерой, что и у Ui.Left; лишнее уходит в многоточие последней строки.
+        static System.Collections.Generic.List<string> WrapLines(Graphics g, string text, Font f, float width, int max)
+        {
+            var res = new System.Collections.Generic.List<string>();
+            foreach (var para in (text ?? "").Split('\n'))
+            {
+                var words = para.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                int i = 0;
+                while (i < words.Length)
+                {
+                    if (res.Count == max - 1) { res.Add(string.Join(" ", words.Skip(i))); return res; }
+                    string line = words[i++];
+                    while (i < words.Length && g.MeasureString(line + " " + words[i], f).Width <= width) line += " " + words[i++];
+                    res.Add(line);
+                }
+                if (res.Count >= max) break;
+            }
+            return res;
         }
 
         protected override void OnMouseMove(MouseEventArgs e)

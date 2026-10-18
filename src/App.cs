@@ -11,7 +11,7 @@ namespace Glasswing
     class App
     {
         public const string Name = "Glasswing";
-        public const string Version = "1.3.1";
+        public const string Version = "1.4";
         public const string ShowEventName = @"Local\Glasswing_Show";
         public const string ExitEventName = @"Local\Glasswing_Exit";
 
@@ -35,7 +35,9 @@ namespace Glasswing
             Modules.Add(new ClockModule());
             Modules.Add(new SysMonitorModule());
             Modules.Add(new NowPlayingModule());
-            Modules.Add(new HubModule());
+            Modules.Add(new OverlayModule());
+            Modules.Add(new WeatherModule());
+            Modules.Add(new TodoModule());
             Modules.Add(new TranslatorModule());
             Modules.Add(new PetModule());
             invoker.CreateControl();

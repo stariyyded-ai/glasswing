@@ -16,6 +16,43 @@ using Microsoft.Win32;
 
 namespace Glasswing
 {
+    // ---------------------------------------------------------------- оверлей: игровой хаб и папки-виджеты
+
+    // Один пункт в центре управления, внутри две части со своими кнопками на столе.
+    // Id остался от игрового хаба, чтобы прежнее «включено» сохранилось.
+    class OverlayModule : Module
+    {
+        readonly Module[] tabs;
+        public override string Id => "hub";
+        public override string Name => "Оверлей";
+        public override string Short => "Игровой хаб и папки";
+        public override string Description => "Стеклянные кнопки, которые раскрываются в полку: игры из Steam и Epic или ярлыки из папки-виджета. Выберите, что настроить.";
+        public override IconKind Icon => IconKind.Overlay;
+        public override Module[] Tabs => tabs;
+        public override bool Running => tabs.Any(t => t.Running);
+
+        public OverlayModule()
+        {
+            tabs = new Module[] { new HubModule(), new FolderModule() };
+            foreach (var t in tabs) t.Parent = this;
+        }
+
+        public override void Start()
+        {
+            // обе части были убраны, а оверлей снова включили: показываем обе
+            if (tabs.All(t => !t.Enabled)) foreach (var t in tabs) t.Enabled = true;
+            foreach (var t in tabs.Where(t => t.Enabled))
+            {
+                try { t.Start(); }
+                catch (Exception ex) { Log.Write(t.Id + " запуск: " + ex.Message); }
+            }
+        }
+
+        public override void Stop() { foreach (var t in tabs) t.Stop(); }
+        public override void SetHidden(bool hidden) { foreach (var t in tabs) t.SetHidden(hidden); }
+        public override void GlassChanged() { foreach (var t in tabs) t.GlassChanged(); }
+    }
+
     // ---------------------------------------------------------------- игровой хаб
 
     class HubModule : Module
@@ -27,6 +64,7 @@ namespace Glasswing
         public override string Short => "Игры из Steam и Epic";
         public override string Description => "Кнопка с геймпадом раскрывает полку с обложками игр из Steam, Epic Games и ваших ярлыков, недавние сверху.";
         public override IconKind Icon => IconKind.Games;
+        protected override string EnabledKey => "Shown";
         public override bool Running => card != null && !card.IsDisposed;
         public override bool CanReset => true;
 
@@ -134,6 +172,7 @@ namespace Glasswing
 
         public override IEnumerable<Row> Rows()
         {
+            yield return ShownRow();
             yield return new Row { Label = "Игры из магазинов", Value = () => SourceNames[Sources], Click = () => Sources = (Sources + 1) % SourceNames.Length };
             yield return new Row
             {
@@ -414,17 +453,7 @@ namespace Glasswing
         }
 
         // Край полки, за который её можно растянуть: код для WM_NCLBUTTONDOWN или 0.
-        int EdgeHit(Point p)
-        {
-            if (!expanded) return 0;
-            int cw = ClientSize.Width, ch = ClientSize.Height, m = S(7);
-            bool right = p.X >= cw - m;
-            bool vert = up ? p.Y <= m : p.Y >= ch - m;
-            if (right && vert) return up ? 14 : 17;
-            if (right) return 11;
-            if (vert) return up ? 12 : 15;
-            return 0;
-        }
+        int EdgeHit(Point p) { return expanded ? Shelf.EdgeHit(p, ClientSize, up) : 0; }
 
         public void SetExpanded(bool on)
         {
@@ -497,14 +526,7 @@ namespace Glasswing
             }
             int edge = Locked ? 0 : EdgeHit(e.Location);
             int h = edge != 0 ? -1 : HitIndex(e.Location);
-            switch (edge)
-            {
-                case 11: Cursor = Cursors.SizeWE; break;
-                case 12: case 15: Cursor = Cursors.SizeNS; break;
-                case 14: Cursor = Cursors.SizeNESW; break;
-                case 17: Cursor = Cursors.SizeNWSE; break;
-                default: Cursor = h >= 0 || e.Y < stripH ? Cursors.Hand : Cursors.Default; break;
-            }
+            Cursor = edge != 0 ? Shelf.EdgeCursor(edge) : h >= 0 || e.Y < stripH ? Cursors.Hand : Cursors.Default;
             if (h != hot) { hot = h; Invalidate(); }
         }
 
@@ -633,16 +655,7 @@ namespace Glasswing
                 g.FillEllipse(white, body.Right - bh / 2 - F(4), cy - dot / 2 - F(2), dot, dot);
                 g.FillEllipse(white, body.Right - bh / 2 + F(0.5), cy - dot / 2 + F(2), dot, dot);
             }
-            // число игр
-            if (items.Count > 0)
-            {
-                string txt = items.Count > 99 ? "99+" : items.Count.ToString(CultureInfo.InvariantCulture);
-                var bf = Ui.Font(10.5, true);
-                float tw = Math.Max(F(17), g.MeasureString(txt, bf).Width + F(4)), bh2 = F(17);
-                var badge = new RectangleF(cw - tw - F(4), F(4), tw, bh2);
-                Ui.FillRound(g, badge, bh2 / 2, Ui.Accent);
-                Ui.Text2(g, txt, bf, Ui.AccentInk, badge, Ui.Center);
-            }
+            Shelf.DrawBadge(g, cw, items.Count);   // число игр
         }
 
         void DrawShelf(Graphics g, int cw, int ch)
@@ -653,13 +666,7 @@ namespace Glasswing
             Color col;
             if (hot >= 0 && hot < items.Count) { text = Info(items[hot]); font = Ui.Font(12); col = ColText; }
             else { text = !scannedOnce ? "Ищу игры…" : "Игры  ·  " + items.Count; font = Ui.Font(13, true); col = ColMuted; }
-            Ui.Text2(g, text, font, col, new RectangleF(pad, 0, cw - 2 * pad - S(22), stripH), Ui.Left, true);
-
-            using (var pen = new Pen(ColMuted, Math.Max(1.5f, F(1.8))) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-            {
-                float ax = cw - pad - F(8), ay = stripH / 2f, a = F(5);
-                g.DrawLines(pen, new[] { new PointF(ax - a, ay + a / 2), new PointF(ax, ay - a / 2), new PointF(ax + a, ay + a / 2) });
-            }
+            Shelf.DrawStrip(g, text, font, col, cw, pad, stripH);
 
             var grid = new Rectangle(0, gridTop, cw, ch - gridTop);
             g.SetClip(grid);
@@ -703,25 +710,9 @@ namespace Glasswing
                     if (isHot) using (var hp = new Pen(ColHotLine, Math.Max(1.5f, F(2)))) g.DrawPath(hp, path);
                 }
             }
-            int max = MaxScroll();
-            if (max > 0)
-            {
-                float viewH = ch - gridTop - pad;
-                float barH = Math.Max(S(24), viewH * viewH / (viewH + max));
-                float barY = gridTop + (viewH - barH) * scroll / max;
-                Ui.FillRound(g, new RectangleF(cw - S(5), barY, S(3), barH), F(1.5), Ui.Edge);
-            }
+            Shelf.DrawScroll(g, cw, ch, gridTop, pad, scroll, MaxScroll());
             g.ResetClip();
-
-            // точки в углу: за него полку можно растянуть
-            float d = Math.Max(2, S(2));
-            using (var mb = new SolidBrush(ColMuted))
-                for (int k = 0; k < 3; k++)
-                {
-                    float dx = cw - S(4) - S(4) * k - d;
-                    float dy = up ? S(4) + S(4) * (2 - k) : ch - S(4) - S(4) * (2 - k) - d;
-                    g.FillEllipse(mb, dx, dy, d, d);
-                }
+            Shelf.DrawGrip(g, cw, ch, up, ColMuted);
         }
 
         protected override void Dispose(bool disposing)

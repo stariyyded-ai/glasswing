@@ -144,6 +144,7 @@ namespace Glasswing
             if (!Settings.GetBool("app", "MigratedNp", false)) MigrateNp();
             if (!Settings.GetBool("app", "MigratedFox", false)) MigrateFox();
             if (!Settings.GetBool("app", "MigratedHub", false)) MigrateHub();
+            if (!Settings.GetBool("app", "MigratedFolder", false)) MigrateFolder();
         }
 
         static void MigrateClock()
@@ -316,6 +317,74 @@ namespace Glasswing
                 string dest = Path.Combine(HubModule.MyGamesDir, Path.GetFileName(f));
                 try { if (!File.Exists(dest)) File.Copy(f, dest); } catch (Exception ex) { Log.Write("ярлык игры: " + ex.Message); }
             }
+        }
+
+        // Виджет-папка жил в %USERPROFILE%\DesktopWidgets: <id>.json с настройками и папка <id> с перенесёнными
+        // значками. Файлы пользователя никуда не двигаем: новые виджеты ссылаются на эти папки там, где они лежат.
+        static void MigrateFolder()
+        {
+            try { StopScript(@"DesktopWidgets\widget.ps1"); } catch (Exception ex) { Log.Write("старая папка-виджет: " + ex.Message); }
+            try { ImportFolders(); } catch (Exception ex) { Log.Write("перенос папок: " + ex.Message); return; }
+            DeleteLinks("Виджет-папка.lnk");
+            Settings.Set("app", "MigratedFolder", true);
+        }
+
+        static void ImportFolders()
+        {
+            string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "DesktopWidgets");
+            if (!Directory.Exists(root)) return;
+            var list = FolderStore.Load();
+            bool top = false, added = false;
+            var ids = new System.Collections.Generic.List<string>();
+            foreach (var f in Directory.GetFiles(root, "*.json")) ids.Add(Path.GetFileNameWithoutExtension(f));
+            // папка без файла настроек тоже виджет: её содержимое не должно потеряться
+            foreach (var d in Directory.GetDirectories(root))
+            {
+                string id = Path.GetFileName(d);
+                if (!ids.Exists(x => string.Equals(x, id, StringComparison.OrdinalIgnoreCase))) ids.Add(id);
+            }
+            foreach (var id in ids)
+            {
+                string dir = Path.Combine(root, id);
+                if (list.Exists(x => FolderFiles.Same(x.Dir, dir))) continue;
+                var info = new FolderInfo { Id = "old-" + id, Title = "Мои ярлыки", Dir = dir };
+                while (list.Exists(x => x.Id == info.Id)) info.Id += "x";
+                string cfg = Path.Combine(root, id + ".json");
+                if (File.Exists(cfg))
+                {
+                    System.Collections.Generic.Dictionary<string, object> j = null;
+                    try { j = Json.Parse(File.ReadAllText(cfg, System.Text.Encoding.UTF8).TrimStart('\uFEFF')) as System.Collections.Generic.Dictionary<string, object>; }
+                    catch (Exception ex) { Log.Write("папка " + id + ": " + ex.Message); }
+                    if (j != null)
+                    {
+                        object v;
+                        if (j.TryGetValue("Title", out v) && v is string && ((string)v).Trim().Length > 0) info.Title = ((string)v).Trim();
+                        if (j.TryGetValue("X", out v) && v is double && j.ContainsKey("Y") && j["Y"] is double)
+                        {
+                            info.HasPos = true;
+                            info.X = (int)Math.Round((double)v);
+                            info.Y = (int)Math.Round((double)j["Y"]);
+                        }
+                        if (j.TryGetValue("ShelfW", out v) && v is double && j.ContainsKey("ShelfH") && j["ShelfH"] is double)
+                        {
+                            info.ShelfW = (int)Math.Round((double)v);
+                            info.ShelfH = (int)Math.Round((double)j["ShelfH"]);
+                        }
+                        if (j.TryGetValue("TopMost", out v) && v is bool && (bool)v) top = true;
+                        object glass;
+                        if (!Settings.Has("app", "Glass") && j.TryGetValue("Glass", out glass) && glass is string && Array.IndexOf(Ui.GlassNames, (string)glass) >= 0)
+                            Settings.Set("app", "Glass", glass, false);
+                    }
+                }
+                else if (!Directory.Exists(dir)) continue;
+                list.Add(info);
+                added = true;
+            }
+            if (!added) return;
+            FolderStore.Save(list);
+            if (top && !Settings.Has("folder", "TopMost")) Settings.Set("folder", "TopMost", true, false);
+            Settings.Set("folder", "Shown", true, false);
+            Settings.Save();
         }
 
         static void ImportSettings(string old, string id, string[] keys)

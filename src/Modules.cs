@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
+using System.Linq;
 using System.Windows.Forms;
 
 namespace Glasswing
@@ -15,7 +16,7 @@ namespace Glasswing
         public Action Click;
     }
 
-    enum IconKind { Clock, Monitor, Music, Fox, Translate, Games }
+    enum IconKind { Clock, Monitor, Music, Fox, Translate, Games, Overlay, Folder, Weather, Todo }
 
     // Виджет внутри Glasswing.
     abstract class Module
@@ -31,8 +32,40 @@ namespace Glasswing
 
         public bool Enabled
         {
-            get { return Settings.GetBool(Id, "Enabled", true); }
-            set { Settings.Set(Id, "Enabled", value); }
+            get { return Settings.GetBool(Id, EnabledKey, true); }
+            set { Settings.Set(Id, EnabledKey, value); }
+        }
+
+        // У части виджета (вкладки) свой ключ «показывать», раздел настроек может быть общим с родителем.
+        protected virtual string EnabledKey => "Enabled";
+
+        // Виджет из нескольких частей: в центре управления это вкладки, выбранная помнится до выхода.
+        public virtual Module[] Tabs => null;
+        public int TabIndex;
+        public Module Parent;
+
+        // Первая строка части: показывать её на рабочем столе независимо от соседних.
+        protected Row ShownRow()
+        {
+            return new Row
+            {
+                Label = "Показывать на рабочем столе",
+                On = () => Parent.Enabled && Enabled,
+                Click = () =>
+                {
+                    if (!Parent.Enabled)
+                    {
+                        // всё выключено: включаем только эту часть
+                        foreach (var t in Parent.Tabs) t.Enabled = t == this;
+                        App.Core.SetEnabled(Parent, true);
+                    }
+                    else
+                    {
+                        App.Core.SetEnabled(this, !Enabled);
+                        if (Parent.Tabs.All(t => !t.Enabled)) App.Core.SetEnabled(Parent, false);
+                    }
+                },
+            };
         }
 
         public abstract bool Running { get; }

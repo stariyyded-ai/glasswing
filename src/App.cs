@@ -11,7 +11,7 @@ namespace Glasswing
     class App
     {
         public const string Name = "Glasswing";
-        public const string Version = "1.4";
+        public const string Version = "1.4.1";
         public const string ShowEventName = @"Local\Glasswing_Show";
         public const string ExitEventName = @"Local\Glasswing_Exit";
 
@@ -97,6 +97,7 @@ namespace Glasswing
             menu.Items.Add(new ToolStripMenuItem(hidden ? "Показать виджеты" : "Спрятать всё на 1 час", null, (s, e) => SetHiddenAll(!hidden)));
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("Проверить обновления", null, (s, e) => Updater.Check(true)));
+            menu.Items.Add(new ToolStripMenuItem("Что нового в версии " + Version, null, (s, e) => { try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("https://github.com/" + Updater.Repo + "/releases/tag/v" + Version) { UseShellExecute = true }); } catch { } }));
             menu.Items.Add(new ToolStripMenuItem("Закрыть " + Name, null, (s, e) => Exit()));
         }
 

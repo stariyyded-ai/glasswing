@@ -386,6 +386,65 @@ namespace Glasswing
             HopStart = T(); HappyUntil = T() + 3;
             for (int i = 0; i < 36; i++) Spawn(1, (float)(rnd.NextDouble() - 0.5) * 220, (float)(-rnd.NextDouble() * 160), 1.4 + rnd.NextDouble());
         }
+        // Фокус персонажа: Кицунэ лисьи огоньки, Шукаку песчаный вихрь, Мататаби синее пламя, Гьюки чернильные брызги.
+        public void Trick()
+        {
+            HopStart = T(); HappyUntil = T() + 2.5;
+            for (int i = 0; i < 28; i++)
+            {
+                Spawn(3, (float)(rnd.NextDouble() - 0.5) * 60, (float)(-rnd.NextDouble() * 40), 1.6 + rnd.NextDouble() * 0.9);
+                var p = ps[ps.Count - 1];
+                p.Spin = (float)(rnd.NextDouble() * Math.PI * 2);
+                if (Ch.Id == "gyuki") { p.VX = (float)Math.Cos(p.Spin) * 130; p.VY = (float)Math.Sin(p.Spin) * 90 - 70; }   // брызги во все стороны
+                else if (Ch.Id == "shukaku") { p.VX = 0; p.VY = -14; }                                                     // вихрь крутится сам
+                else { p.VX *= 1.5f; p.VY *= 1.6f; }
+            }
+        }
+        void TrickDot(Graphics g, Particle p, float px, float py, float u, double age, int a)
+        {
+            switch (Ch.Id)
+            {
+                case "shukaku":
+                {
+                    // песок кружит вокруг, вихрь расширяется
+                    double ang = p.Spin + age * 6;
+                    float r = (30 + (float)age * 45) * u;
+                    float x = px + (float)Math.Cos(ang) * r, y = py + (float)Math.Sin(ang) * r * 0.35f;
+                    float s = 3.2f * u * p.Size;
+                    using (var b = new SolidBrush(Color.FromArgb(a, Ch.Accent))) g.FillEllipse(b, x - s, y - s, 2 * s, 2 * s);
+                    break;
+                }
+                case "gyuki":
+                {
+                    // чернила падают вниз
+                    float y = py + (float)(age * age) * 160 * u;
+                    float s = 5.5f * u * p.Size * (float)(1 + age * 0.4);
+                    using (var b = new SolidBrush(Color.FromArgb(a * 220 / 255, 38, 24, 52))) g.FillEllipse(b, px - s, y - s * 0.8f, 2 * s, 1.6f * s);
+                    break;
+                }
+                case "matatabi":
+                {
+                    // язычок синего пламени: капля острием вверх
+                    float s = 7 * u * p.Size * (float)(0.8 + 0.2 * Math.Sin(age * 10 + p.Spin));
+                    using (var path = new GraphicsPath())
+                    {
+                        path.AddBezier(px, py - s * 1.8f, px + s, py - s * 0.4f, px + s, py + s * 0.6f, px, py + s * 0.6f);
+                        path.AddBezier(px, py + s * 0.6f, px - s, py + s * 0.6f, px - s, py - s * 0.4f, px, py - s * 1.8f);
+                        using (var b = new SolidBrush(Color.FromArgb(a * 200 / 255, Ch.Accent))) g.FillPath(b, path);
+                    }
+                    using (var b = new SolidBrush(Color.FromArgb(a, Ch.Light))) g.FillEllipse(b, px - s * 0.35f, py - s * 0.1f, s * 0.7f, s * 0.7f);
+                    break;
+                }
+                default:
+                {
+                    // лисий огонёк: светящийся шарик с искрой
+                    float s = 6 * u * p.Size;
+                    using (var b = new SolidBrush(Color.FromArgb(a / 3, Ch.Accent))) g.FillEllipse(b, px - s * 1.8f, py - s * 1.8f, s * 3.6f, s * 3.6f);
+                    Sparkle(g, px, py, s * (float)(0.8 + 0.3 * Math.Sin(age * 12 + p.Spin)), a, true);
+                    break;
+                }
+            }
+        }
         void Spawn(int kind, float dx, float dy, double life)
         {
             ps.Add(new Particle
@@ -812,6 +871,7 @@ namespace Glasswing
                     float px = hx + p.X * u, py = hy + p.Y * u;
                     if (p.Kind == 0) Heart(g, px, py, 13 * u * p.Size, a);
                     else if (p.Kind == 1) Sparkle(g, px, py, 7 * u * p.Size * (float)(0.7 + 0.3 * Math.Sin(age * 8 + p.Spin)), a, i % 3 == 0);
+                    else if (p.Kind == 3) TrickDot(g, p, px, py, u, age, a);
                     else
                     {
                         using (var zf = new Font("Segoe UI", 11 * u * p.Size, FontStyle.Bold, GraphicsUnit.Pixel))

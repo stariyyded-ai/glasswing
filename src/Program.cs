@@ -9,9 +9,9 @@ using System.Windows.Forms;
 [assembly: AssemblyDescription("Стеклянные виджеты для рабочего стола")]
 [assembly: AssemblyCompany("Glasswing")]
 [assembly: AssemblyCopyright("Glasswing")]
-[assembly: AssemblyVersion("1.4.3.0")]
-[assembly: AssemblyFileVersion("1.4.3.0")]
-[assembly: AssemblyInformationalVersion("1.4.3")]
+[assembly: AssemblyVersion("1.5.0.0")]
+[assembly: AssemblyFileVersion("1.5.0.0")]
+[assembly: AssemblyInformationalVersion("1.5")]
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8", FrameworkDisplayName = ".NET Framework 4.8")]
 
 namespace Glasswing

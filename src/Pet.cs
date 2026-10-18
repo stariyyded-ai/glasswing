@@ -51,6 +51,21 @@ namespace Glasswing
             set { Settings.Set(Id, "Breaks", value); }
         }
 
+        // Голос: 0 выкл, 1 тихо, 2 громко. Сам синтезатор в PetVoice.cs.
+        public static readonly string[] Voices = { "Выкл", "Тихо", "Громко" };
+        public int Voice
+        {
+            get { return Math.Max(0, Math.Min(2, Settings.GetInt(Id, "Voice", 1))); }
+            set { Settings.Set(Id, "Voice", value); }
+        }
+
+        // Замечать погоду, дела, музыку и прочее (PetAware.cs).
+        public bool Aware
+        {
+            get { return Settings.GetBool(Id, "Aware", true); }
+            set { Settings.Set(Id, "Aware", value); }
+        }
+
         public PetChar Char => PetChar.Find(Settings.GetString(Id, "Char", "kitsune"));
 
         // Смена персонажа: рост, еда, настроение и напоминания остаются, а имя у каждого персонажа своё.
@@ -100,6 +115,8 @@ namespace Glasswing
             yield return new Row { Label = "Закрепить на месте", On = () => Locked, Click = () => Locked = !Locked };
             yield return new Row { Label = "Гулять по экрану", On = () => Walk, Click = () => Walk = !Walk };
             yield return new Row { Label = "Напоминать о перерывах", On = () => Breaks, Click = () => Breaks = !Breaks };
+            yield return new Row { Label = "Голос", Value = () => Voices[Voice], Click = () => { Voice = (Voice + 1) % Voices.Length; if (Running) life.VoiceSample(); } };
+            yield return new Row { Label = "Замечать, что происходит", On = () => Aware, Click = () => Aware = !Aware };
         }
     }
 
@@ -207,7 +224,7 @@ namespace Glasswing
     class PetFood { public string Name, Short, Acc, Gen; public int Food, Mood; }
 
     // Характер питомца: забота, рост, разговоры, игры и напоминания.
-    class PetLife : IDisposable
+    partial class PetLife : IDisposable
     {
         static readonly CultureInfo Ru = CultureInfo.GetCultureInfo("ru-RU");
         const double TeenXp = 120, AdultXp = 400;          // сколько заботы нужно, чтобы подрасти
@@ -307,7 +324,7 @@ namespace Glasswing
             form.MouseMove += (s, e) => pet.HoverUntil = pet.T() + 1.6;
             form.MouseDown += OnMouseDown;
             form.MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) { Touch(); BuildMenu().Show(form, e.Location); } };
-            form.Shown += (s, e) => { anim.Start(); life.Start(); Greet(); };
+            form.Shown += (s, e) => { anim.Start(); life.Start(); StartAware(); Greet(); };
             input.Submit += OnInput;
 
             anim.Tick += (s, e) =>
@@ -369,6 +386,7 @@ namespace Glasswing
         public void Dispose()
         {
             anim.Stop(); life.Stop();
+            StopAware();
             pet.StopMode();
             SaveState();
             anim.Dispose(); life.Dispose();
@@ -458,6 +476,7 @@ namespace Glasswing
         {
             if (sec <= 0) sec = Math.Min(22, 3.5 + text.Length / 16.0);
             pet.Say(text, sec);
+            Voice(text);
             lastTalk = DateTime.Now;
         }
 
@@ -686,8 +705,8 @@ namespace Glasswing
         static string Help(string st)
         {
             if (st == "teen")
-                return "Я умею:\n• сказать, который час и какое сегодня число\n• поставить таймер: «таймер 10 минут»\n• подбросить монетку и бросить кубик\n• рассказать шутку\nПодрасту и научусь помогать по-настоящему!";
-            return "Я умею:\n• время и дата\n• «таймер 10 минут»\n• «напомни через 20 минут выпить воды»\n• «напомни в 18:30 позвонить маме»\n• «запомни купить молоко», «что ты помнишь», «забудь заметки»\n• «открой steam», «открой блокнот»\n• «посчитай 25*4+7»\n• монетка, кубик, шутка\n• «перерывы выкл» или «перерывы вкл»";
+                return "Я умею:\n• сказать, который час и какое сегодня число\n• поставить таймер: «таймер 10 минут»\n• подбросить монетку и бросить кубик\n• рассказать шутку\n• «какая погода», «что по делам», «что играет»" + SkillsHelp + "\nПодрасту и научусь помогать по-настоящему!";
+            return "Я умею:\n• время и дата\n• «таймер 10 минут»\n• «напомни через 20 минут выпить воды»\n• «напомни в 18:30 позвонить маме»\n• «запомни купить молоко», «что ты помнишь», «забудь заметки»\n• «открой steam», «открой блокнот»\n• «посчитай 25*4+7»\n• монетка, кубик, шутка\n• «какая погода», «что по делам», «что играет»" + SkillsHelp + "\n• «перерывы выкл» или «перерывы вкл»";
         }
 
         static Match M(string s, string pattern) { return Regex.Match(s, pattern, RegexOptions.IgnoreCase); }
@@ -701,6 +720,9 @@ namespace Glasswing
             Match m;
             P.Mood = Clamp(P.Mood + 3);
             if ((DateTime.Now - lastTalkXp).TotalSeconds > 30) { AddXp(2); lastTalkXp = DateTime.Now; }
+            // помощник и «что происходит» раньше игр: «играй» и «что играет» похожи на «играть»
+            string aw = SkillReply(t, l) ?? AwareReply(l);
+            if (aw != null) return aw;
             if (Has(l, "мяч|поигра|играть|игра")) { StartGame(2); return null; }
             if (Has(l, "догонял|догони")) { StartGame(3); return null; }
             if (Has(l, "поймай|убегай|прятк")) { StartGame(4); return null; }

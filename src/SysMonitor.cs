@@ -54,6 +54,8 @@ namespace Glasswing
         }
 
         public override void SetHidden(bool hidden) { if (Running) card.SetHidden(hidden); }
+        // Последние показания датчиков для питомца; пусто, если виджет выключен.
+        public SysSensors.Snapshot? Sensors => Running ? card.Sensors : (SysSensors.Snapshot?)null;
         public override void GlassChanged() { if (Running) card.ApplyGlass(); }
         public override bool HasGlass => true;
         public override void ResetPosition() { if (Running) card.ResetPosition(); }
@@ -84,6 +86,7 @@ namespace Glasswing
         List<Line> lines;
         string shown = "";
         bool diagSaved;
+        public SysSensors.Snapshot Sensors => sensors.Read();
 
         public SysMonitorCard(SysMonitorModule m) : base(m)
         {

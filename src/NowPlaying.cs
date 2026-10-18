@@ -65,6 +65,10 @@ namespace Glasswing
         }
 
         public override void SetHidden(bool hide) { hidden = hide; if (Running) card.SyncVisible(); }
+        // Текущий трек для питомца: только читать (обложку не трогать, карточка её освобождает).
+        public NpInfo Current => Running ? card.Current : null;
+        // Кнопка для питомца: prev, play (пауза и снова), next. false, если плеера не видно.
+        public bool Command(string cmd) { return Running && card.Command(cmd); }
         public override void GlassChanged() { if (Running) card.ApplyGlass(); }
         public override bool HasGlass => true;
         public override void ResetPosition() { if (Running) card.ResetPosition(); }
@@ -109,6 +113,8 @@ namespace Glasswing
         readonly int[] btnX, btnR;
         NpMedia media;
         NpInfo info = new NpInfo();
+        public NpInfo Current => info;
+        public bool Command(string cmd) { if (media == null || !info.Has) return false; media.Command(cmd); return true; }
 
         bool seeking, hoverBar, hoverCard;
         double seekFrac;

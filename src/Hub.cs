@@ -141,6 +141,10 @@ namespace Glasswing
 
         public void Refresh() { if (Running) card.Rescan(); }
 
+        // Для питомца: игры на полке (недавние сверху) и запуск тем же путём, что щелчок по обложке.
+        public List<HubGame> ShelfGames => Running ? card.Games : new List<HubGame>();
+        public void Launch(HubGame g) { if (Running) card.Launch(g); }
+
         public override void Start()
         {
             if (Running) return;
@@ -244,6 +248,8 @@ namespace Glasswing
 
         public bool Scanning => asked != got;
         public int Count => items.Count;
+        public List<HubGame> Games => items;
+        public void Launch(HubGame g) { Play(g); }
 
         static int S(double v) { return Ui.S(v); }
         static float F(double v) { return (float)(v * Ui.Scale); }

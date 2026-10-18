@@ -42,13 +42,13 @@ namespace Glasswing
             return WNative.SetAcrylic(h, GlassLevels[i][0], GlassLevels[i][1], 20, 22, 32);
         }
 
-        // Акрил (state 4) на Windows 10/11 моргает и отстаёт, пока окно тащат.
-        // На время переноса ставим обычное размытие, после отпускания возвращаем акрил.
+        // Акрил (state 4) и размытие (3) моргают, пока окно тащат; простая тонировка (2) нет.
+        // На время переноса ставим тонировку чуть плотнее, после отпускания возвращаем стекло.
         public static void GlassWhileMoving(IntPtr h, string name)
         {
             int i = Array.IndexOf(GlassNames, name);
             if (i < 0) i = 2;
-            if (GlassLevels[i][0] == 4) WNative.SetAcrylic(h, 3, GlassLevels[i][1], 20, 22, 32);
+            if (GlassLevels[i][0] != 2) WNative.SetAcrylic(h, 2, Math.Min(230, GlassLevels[i][1] + 80), 20, 22, 32);
         }
 
         public const int WM_ENTERSIZEMOVE = 0x231, WM_EXITSIZEMOVE = 0x232;

@@ -54,10 +54,10 @@ namespace Glasswing
             Invalidate();
         }
 
-        // акрил моргает при переносе окна: на это время обычное размытие (см. Ui.GlassWhileMoving)
+        // акрил моргает при переносе окна: на это время простая тонировка (см. Ui.GlassWhileMoving)
         protected override void WndProc(ref Message m)
         {
-            if (!noGlass && m.Msg == Ui.WM_ENTERSIZEMOVE) WNative.SetAcrylic(Handle, 3, 215, 18, 21, 30);
+            if (!noGlass && m.Msg == Ui.WM_ENTERSIZEMOVE) WNative.SetAcrylic(Handle, 2, 230, 18, 21, 30);
             base.WndProc(ref m);
             if (!noGlass && m.Msg == Ui.WM_EXITSIZEMOVE) WNative.SetAcrylic(Handle, 4, 215, 18, 21, 30);
         }

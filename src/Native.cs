@@ -114,6 +114,7 @@ namespace Glasswing
         [DllImport("user32.dll")] static extern void PostQuitMessage(int code);
         [DllImport("user32.dll")] static extern IntPtr SetCapture(IntPtr h);
         [DllImport("user32.dll")] static extern IntPtr GetCapture();
+        [DllImport("dwmapi.dll")] static extern int DwmFlush();
 
         // Перетаскивание окна за любое место. Двигаем сами, а не системным циклом переноса
         // (WM_NCLBUTTONDOWN + HTCAPTION): с ним стеклянные окна моргают, пока их тащат.
@@ -142,7 +143,12 @@ namespace Glasswing
                     {
                         var p = Cursor.Position;
                         var to = new Point(origin.X + p.X - start.X, origin.Y + p.Y - start.Y);
-                        if (to != last) { SetWindowPos(h, IntPtr.Zero, to.X, to.Y, 0, 0, 0x1 | 0x4 | 0x10); last = to; }
+                        if (to != last)
+                        {
+                            SetWindowPos(h, IntPtr.Zero, to.X, to.Y, 0, 0, 0x1 | 0x4 | 0x10);
+                            last = to;
+                            try { DwmFlush(); } catch { }   // не чаще одного сдвига за кадр экрана
+                        }
                         continue;
                     }
                     TranslateMessage(ref m);

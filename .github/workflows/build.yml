@@ -1,0 +1,53 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reference assemblies for .NET Framework 4.8
+        run: |
+          curl -sSL -o refs.nupkg https://api.nuget.org/v3-flatcontainer/microsoft.netframework.referenceassemblies.net48/1.0.3/microsoft.netframework.referenceassemblies.net48.1.0.3.nupkg
+          mkdir -p refs && unzip -q refs.nupkg -d refs
+
+      - name: Build Glasswing.exe
+        shell: pwsh
+        run: |
+          $out = & ./build.ps1 -RefDir refs/build/.NETFramework/v4.8
+          $out
+          if (-not ($out -match '^ok:')) { exit 1 }
+
+      - name: Checksum
+        run: |
+          cd out
+          sha256sum Glasswing.exe | cut -d' ' -f1 > Glasswing.exe.sha256
+          cat Glasswing.exe.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Glasswing
+          path: |
+            out/Glasswing.exe
+            out/Glasswing.exe.sha256
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          ver="${tag#v}"
+          grep -q "Version = \"$ver\"" src/App.cs || { echo "App.Version does not match tag $tag"; exit 1; }
+          notes="releases/$tag.md"
+          [ -f "$notes" ] || notes=/dev/null
+          gh release create "$tag" out/Glasswing.exe out/Glasswing.exe.sha256 --title "Glasswing $ver" --notes-file "$notes"

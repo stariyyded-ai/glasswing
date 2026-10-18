@@ -1,0 +1,4 @@
+out/
+refs/
+*.nupkg
+__pycache__/

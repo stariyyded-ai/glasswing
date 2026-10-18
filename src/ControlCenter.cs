@@ -1,0 +1,321 @@
+using System;
+using System.Drawing;
+using System.Linq;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Windows.Forms;
+
+namespace Glasswing
+{
+    // Центр управления: слева все виджеты с переключателями, справа настройки выбранного.
+    class ControlCenter : Form
+    {
+        static readonly int BaseW = 1040, BaseH = 700;
+        readonly Hits hits = new Hits();
+        Module sel;
+        string hover;
+        bool noGlass;
+        public bool AllowClose;
+
+        public ControlCenter()
+        {
+            Text = App.Name;
+            Icon = App.AppIcon;
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.CenterScreen;
+            AutoScaleMode = AutoScaleMode.None;
+            BackColor = Color.Black;
+            KeyPreview = true;
+            ClientSize = new Size(Ui.S(BaseW), Ui.S(BaseH));
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.Opaque, true);
+            sel = App.Core.Modules[0];
+        }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var cp = base.CreateParams;
+                cp.Style |= 0x00020000 | 0x00080000;   // MINIMIZEBOX | SYSMENU: сворачивается с панели задач
+                return cp;
+            }
+        }
+
+        public void Select(Module m)
+        {
+            if (m != null) sel = m;
+            Invalidate();
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            WNative.RoundDark(Handle);
+            noGlass = !WNative.SetAcrylic(Handle, 4, 215, 18, 21, 30);
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (!AllowClose && e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); }
+            base.OnFormClosing(e);
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            if (e.KeyCode == Keys.Escape) Hide();
+        }
+
+        int S(double v) { return Ui.S(v); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            int cw = ClientSize.Width, ch = ClientSize.Height;
+            if (cw <= 0 || ch <= 0) return;
+            hits.Clear();
+            using (var bmp = new Bitmap(cw, ch, PixelFormat.Format32bppPArgb))
+            {
+                using (var g = Graphics.FromImage(bmp))
+                {
+                    Ui.Prepare(g);
+                    if (noGlass) g.Clear(Ui.Fallback);
+                    using (var wash = new SolidBrush(Color.FromArgb(10, 255, 255, 255))) g.FillRectangle(wash, 0, 0, cw, ch);
+                    if (WNative.Build < 22000)
+                        using (var edge = new Pen(Ui.Edge, 1)) g.DrawRectangle(edge, 0, 0, cw - 1, ch - 1);
+                    try
+                    {
+                        DrawTitle(g, cw);
+                        DrawSidebar(g, ch);
+                        DrawDetails(g, cw, ch);
+                    }
+                    catch (Exception ex) { Log.Write("центр: " + ex.Message); }
+                }
+                WNative.BlitArgb(e.Graphics, bmp, 0, 0);
+            }
+        }
+
+        void Line(Graphics g, float x1, float y1, float x2, float y2)
+        {
+            using (var p = new Pen(Color.FromArgb(22, 255, 255, 255), 1)) g.DrawLine(p, x1, y1, x2, y2);
+        }
+
+        void DrawTitle(Graphics g, int cw)
+        {
+            Ui.Logo(g, new RectangleF(S(16), S(12), S(26), S(26)));
+            Ui.Text2(g, App.Name, Ui.Font(15, true), Ui.Text, new RectangleF(S(50), 0, S(120), S(48)), Ui.Left);
+            float nameW = g.MeasureString(App.Name, Ui.Font(15, true)).Width;
+            Ui.Text2(g, "Центр управления", Ui.Font(12), Ui.Faint, new RectangleF(S(50) + nameW + S(6), 0, S(200), S(48)), Ui.Left);
+            Line(g, 0, S(48), cw, S(48));
+
+            var min = new Rectangle(cw - S(92), S(4), S(46), S(40));
+            var close = new Rectangle(cw - S(46), S(4), S(46), S(40));
+            if (hover == "min") Ui.FillRound(g, min, S(6), Ui.PanelHi);
+            if (hover == "close") Ui.FillRound(g, close, S(6), Color.FromArgb(200, 196, 43, 28));
+            using (var p = new Pen(Color.FromArgb(214, 219, 228), Math.Max(1f, Ui.Scale)))
+            {
+                g.DrawLine(p, min.X + S(17), min.Y + S(20), min.X + S(29), min.Y + S(20));
+                g.DrawLine(p, close.X + S(17), close.Y + S(14), close.X + S(29), close.Y + S(26));
+                g.DrawLine(p, close.X + S(29), close.Y + S(14), close.X + S(17), close.Y + S(26));
+            }
+            hits.Add(min, "min", () => WindowState = FormWindowState.Minimized);
+            hits.Add(close, "close", Hide);
+        }
+
+        void DrawIcon(Graphics g, IconKind kind, RectangleF r)
+        {
+            var st = g.Save();
+            g.TranslateTransform(r.X, r.Y);
+            g.ScaleTransform(r.Width / 24f, r.Height / 24f);
+            using (var p = new Pen(Color.White, 1.8f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+            {
+                switch (kind)
+                {
+                    case IconKind.Clock:
+                        g.DrawEllipse(p, 3.5f, 3.5f, 17, 17);
+                        g.DrawLines(p, new[] { new PointF(12, 7.5f), new PointF(12, 12), new PointF(15, 14) });
+                        break;
+                    case IconKind.Monitor:
+                        g.DrawLines(p, new[] { new PointF(3, 16), new PointF(7, 11), new PointF(11, 14), new PointF(15, 7), new PointF(21, 16) });
+                        break;
+                    case IconKind.Music:
+                        g.DrawLines(p, new[] { new PointF(9, 17), new PointF(9, 5), new PointF(19, 3), new PointF(19, 15) });
+                        g.DrawEllipse(p, 4, 14.5f, 5, 5);
+                        g.DrawEllipse(p, 14, 12.5f, 5, 5);
+                        break;
+                    case IconKind.Fox:
+                        g.DrawPolygon(p, new[] { new PointF(4, 4), new PointF(8, 10), new PointF(16, 10), new PointF(20, 4), new PointF(20, 13), new PointF(12, 21), new PointF(4, 13) });
+                        using (var b = new SolidBrush(Color.White)) { g.FillEllipse(b, 8.5f, 12, 2, 2); g.FillEllipse(b, 13.5f, 12, 2, 2); }
+                        break;
+                    case IconKind.Translate:
+                        g.DrawLine(p, 3, 5, 12, 5);
+                        g.DrawLine(p, 7.5f, 3, 7.5f, 5);
+                        g.DrawBezier(p, 5, 5, 6, 9, 8.5f, 11.5f, 11.5f, 13);
+                        g.DrawBezier(p, 10, 5, 9, 9, 6.5f, 11.5f, 3.5f, 13);
+                        g.DrawLines(p, new[] { new PointF(13, 21), new PointF(17, 11), new PointF(21, 21) });
+                        g.DrawLine(p, 14.5f, 17.5f, 19.5f, 17.5f);
+                        break;
+                    case IconKind.Games:
+                        using (var body = Ui.Round(new RectangleF(2.5f, 7, 19, 11), 5.5f)) g.DrawPath(p, body);
+                        g.DrawLine(p, 6, 12.5f, 10, 12.5f);
+                        g.DrawLine(p, 8, 10.5f, 8, 14.5f);
+                        using (var b = new SolidBrush(Color.White)) { g.FillEllipse(b, 14.2f, 9.8f, 2.4f, 2.4f); g.FillEllipse(b, 16.6f, 12.6f, 2.4f, 2.4f); }
+                        break;
+                }
+            }
+            g.Restore(st);
+        }
+
+        void DrawSidebar(Graphics g, int ch)
+        {
+            int sw = S(300);
+            Line(g, sw, S(48), sw, ch);
+            Ui.Text2(g, "ВИДЖЕТЫ", Ui.Font(11, true), Ui.Faint, new RectangleF(S(22), S(58), S(200), S(22)), Ui.Left);
+            int y = S(84);
+            foreach (var m in App.Core.Modules)
+            {
+                var mod = m;
+                var row = new Rectangle(S(12), y, sw - S(24), S(56));
+                bool active = mod == sel;
+                if (active) Ui.FillRound(g, row, S(10), Ui.PanelHi);
+                else if (hover == "row:" + mod.Id) Ui.FillRound(g, row, S(10), Ui.Panel);
+                bool on = mod.Ported && mod.Enabled;
+                var tile = new RectangleF(row.X + S(10), row.Y + S(11), S(34), S(34));
+                Ui.FillRound(g, tile, S(9), Color.FromArgb(on ? 36 : 14, 255, 255, 255));
+                DrawIcon(g, mod.Icon, new RectangleF(tile.X + S(8), tile.Y + S(8), S(18), S(18)));
+                float tx = tile.Right + S(12);
+                float tw = row.Right - S(64) - tx;
+                Ui.Text2(g, mod.Name, Ui.Font(14, true), mod.Ported ? Ui.Text : Ui.Muted, new RectangleF(tx, row.Y + S(8), tw, S(22)), Ui.Left);
+                Ui.Text2(g, mod.Ported ? mod.Short : "Скоро переедет", Ui.Font(12), Ui.Faint, new RectangleF(tx, row.Y + S(29), tw, S(18)), Ui.Left);
+                hits.Add(row, "row:" + mod.Id, () => Select(mod));
+                var tg = new Rectangle(row.Right - S(54), row.Y + S(16), S(44), S(24));
+                Ui.Toggle(g, tg, on, mod.Ported);
+                if (mod.Ported) hits.Add(tg, "tg:" + mod.Id, () => { App.Core.SetEnabled(mod, !mod.Enabled); Select(mod); });
+                y += S(60);
+            }
+
+            var foot = new Rectangle(S(12), ch - S(80), sw - S(24), S(64));
+            Ui.FillRound(g, foot, S(10), Ui.Panel);
+            Ui.Text2(g, "Запускать вместе с Windows", Ui.Font(13, true), Ui.Text, new RectangleF(foot.X + S(14), foot.Y + S(10), foot.Width - S(80), S(22)), Ui.Left);
+            Ui.Text2(g, "Версия " + App.Version, Ui.Font(12), Ui.Faint, new RectangleF(foot.X + S(14), foot.Y + S(32), foot.Width - S(80), S(20)), Ui.Left);
+            var at = new Rectangle(foot.Right - S(56), foot.Y + S(20), S(44), S(24));
+            Ui.Toggle(g, at, Installer.Autostart);
+            hits.Add(at, "auto", () => { Installer.Autostart = !Installer.Autostart; Invalidate(); });
+        }
+
+        void DrawDetails(Graphics g, int cw, int ch)
+        {
+            int x = S(332), right = cw - S(32), w = right - x;
+            var m = sel;
+            bool running = m.Ported && m.Enabled;
+
+            string badge = !m.Ported ? "Скоро" : running ? "Работает" : "Выключен";
+            var bf = Ui.Font(12, true);
+            int bw = (int)g.MeasureString(badge, bf).Width + S(26);
+            var br = new Rectangle(right - bw, S(76), bw, S(28));
+            Ui.FillRound(g, br, br.Height / 2f, running ? Ui.Accent : Color.FromArgb(20, 255, 255, 255));
+            Ui.Text2(g, badge, bf, running ? Ui.AccentInk : Ui.Muted, br, Ui.Center);
+
+            Ui.Text2(g, m.Name, Ui.Font(26, true), Ui.Text, new RectangleF(x, S(68), w - bw - S(16), S(40)), Ui.Left);
+            var df = Ui.Font(14);
+            float dw = Math.Min(w - bw - S(16), S(540));
+            float dh = Math.Min(S(64), g.MeasureString(m.Description, df, (int)dw).Height + S(2));
+            Ui.Text2(g, m.Description, df, Ui.Muted, new RectangleF(x, S(112), dw, dh), Ui.Wrap);
+
+            int y = S(112) + (int)dh + S(24);
+            if (!m.Ported)
+            {
+                var info = new Rectangle(x, y, w, S(76));
+                Ui.FillRound(g, info, S(10), Ui.Panel);
+                Ui.Text2(g, "Пока этот виджет работает отдельной программой, как раньше. Он переедет в " + App.Name +
+                    " в следующем обновлении, и тогда его можно будет включать и настраивать здесь.",
+                    Ui.Font(13.5), Ui.Muted, new RectangleF(info.X + S(16), info.Y + S(14), info.Width - S(32), info.Height - S(20)), Ui.Wrap);
+                y = info.Bottom + S(16);
+            }
+            else
+            {
+                // строки сжимаются, если вместе с кнопкой сброса не помещаются над блоком стекла
+                var rows = m.Rows().ToList();
+                bool reset = m.CanReset && m.Running;
+                int room = ch - S(118) - S(20) - y - (reset ? S(48) : 0);
+                int step = rows.Count == 0 ? S(60) : Math.Max(S(44), Math.Min(S(60), room / rows.Count));
+                int rh = step - S(10) * step / S(60);
+                int i = 0;
+                foreach (var r in rows)
+                {
+                    var row = r;
+                    var rc = new Rectangle(x, y, w, rh);
+                    string key = "set:" + i++;
+                    Ui.FillRound(g, rc, S(10), hover == key ? Ui.PanelHi : Ui.Panel);
+                    Ui.Text2(g, row.Label, Ui.Font(14), Ui.Text, new RectangleF(rc.X + S(16), rc.Y, rc.Width / 2f, rc.Height), Ui.Left);
+                    if (row.On != null)
+                        Ui.Toggle(g, new Rectangle(rc.Right - S(60), rc.Y + (rh - S(24)) / 2, S(44), S(24)), row.On());
+                    else
+                    {
+                        Ui.Text2(g, row.Value(), Ui.Font(13.5, true), Ui.Accent, new RectangleF(rc.X + rc.Width / 2f, rc.Y, rc.Width / 2f - S(40), rc.Height), Ui.Right);
+                        using (var p = new Pen(Ui.Faint, 1.5f * Ui.Scale))
+                        {
+                            float ax = rc.Right - S(26), ay = rc.Y + rc.Height / 2f;
+                            g.DrawLines(p, new[] { new PointF(ax, ay - S(5)), new PointF(ax + S(5), ay), new PointF(ax, ay + S(5)) });
+                        }
+                    }
+                    hits.Add(rc, key, () => { row.Click(); Invalidate(); });
+                    y += step;
+                }
+                if (reset)
+                {
+                    y += S(2);
+                    var bf2 = Ui.Font(13, true);
+                    string label = "Вернуть на место";
+                    var b = new Rectangle(x, y, (int)g.MeasureString(label, bf2).Width + S(36), S(40));
+                    Ui.FillRound(g, b, b.Height / 2f, hover == "reset" ? Ui.PanelHi : Ui.Panel);
+                    Ui.StrokeRound(g, b, b.Height / 2f, Color.FromArgb(36, 255, 255, 255));
+                    Ui.Text2(g, label, bf2, Ui.Text, b, Ui.Center);
+                    hits.Add(b, "reset", () => m.ResetPosition());
+                }
+            }
+
+            int gy = ch - S(118);
+            Line(g, x, gy, right, gy);
+            Ui.Text2(g, "СТЕКЛО ДЛЯ ВСЕХ ВИДЖЕТОВ", Ui.Font(11, true), Ui.Faint, new RectangleF(x, gy + S(14), w, S(22)), Ui.Left);
+            int px = x;
+            var pf = Ui.Font(13);
+            foreach (var name in Ui.GlassNames)
+            {
+                var n = name;
+                bool on = n == App.Glass;
+                var pill = new Rectangle(px, gy + S(46), (int)g.MeasureString(n, pf).Width + S(34), S(40));
+                Ui.FillRound(g, pill, pill.Height / 2f, on ? Color.FromArgb(36, 110, 215, 200) : hover == "glass:" + n ? Ui.Panel : Color.Transparent);
+                Ui.StrokeRound(g, pill, pill.Height / 2f, on ? Ui.Accent : Color.FromArgb(36, 255, 255, 255));
+                Ui.Text2(g, n, pf, on ? Ui.Text : Ui.Muted, pill, Ui.Center);
+                hits.Add(pill, "glass:" + n, () => { App.Core.SetGlass(n); Invalidate(); });
+                px = pill.Right + S(8);
+            }
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            string k = hits.KeyAt(e.Location);
+            Cursor = hits.CursorAt(e.Location);
+            if (k != hover) { hover = k; Invalidate(); }
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            if (hover != null) { hover = null; Invalidate(); }
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button == MouseButtons.Left && e.Y < S(48) && hits.KeyAt(e.Location) == null) WNative.DragWindow(this);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            if (e.Button == MouseButtons.Left) hits.ClickAt(e.Location);
+        }
+    }
+}

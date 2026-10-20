@@ -268,14 +268,18 @@ namespace Glasswing
 
     class TodoCard : GlassCard
     {
+        const int MaxLines = 3;   // длинное дело переносится не больше чем на три строки
         readonly TodoModule todo;
         readonly GlassInput input;
+        readonly GlassHint hint;
         readonly Hits hits = new Hits();
         readonly Timer tick = new Timer { Interval = 1000 };
         readonly Font strike;
         readonly int cardW = Ui.S(330), pad = Ui.S(18), top = Ui.S(14), headH = Ui.S(22), pitch = Ui.S(34), rowH = Ui.S(30),
                      inH = Ui.S(34), bottom = Ui.S(16), maxH = Ui.S(470);
+        readonly int lineH;
         readonly List<KeyValuePair<Rectangle, TodoItem>> shownRows = new List<KeyValuePair<Rectangle, TodoItem>>();
+        readonly Dictionary<string, string> cutText = new Dictionary<string, string>();   // что не влезло: ключ строки -> полный текст
         Rectangle inputRect;
         bool typing;
         TodoItem editing;      // null, пока пишем новое дело
@@ -287,6 +291,8 @@ namespace Glasswing
         {
             todo = m;
             strike = new Font("Segoe UI", (float)(14 * Ui.Scale), FontStyle.Strikeout, GraphicsUnit.Pixel);
+            lineH = (int)Math.Ceiling(TextFit.LineHeight(Ui.Font(14)));
+            hint = new GlassHint(this);
             input = new GlassInput(this, 200);
             input.Submit += Submit;
             input.Cancel += EndTyping;
@@ -299,7 +305,35 @@ namespace Glasswing
 
         int ListTop => top + headH + Ui.S(8);
         int ListMax => maxH - ListTop - Ui.S(6) - inH - bottom;
-        int ListH => Math.Min(TodoList.Items.Count * pitch, Math.Max(pitch, ListMax));
+        int ListH => Math.Min(TotalH(), Math.Max(pitch, ListMax));
+
+        // Ширина текста дела: от кружка до правого края строки.
+        int TextW => cardW - 2 * pad - Ui.S(28);
+
+        TextFit.Fit Wrap(TodoItem it) { return TextFit.Wrap(it.Text, Ui.Font(14), TextW, MaxLines); }
+
+        // Высота строки дела растёт на каждую перенесённую строку текста.
+        int RowHeight(TodoItem it) { return rowH + (Math.Max(1, Wrap(it).Lines.Count) - 1) * lineH; }
+
+        int Gap => pitch - rowH;
+
+        int TotalH()
+        {
+            int t = 0;
+            foreach (var it in TodoList.Items) t += RowHeight(it) + Gap;
+            return t;
+        }
+
+        int OffsetOf(TodoItem x)
+        {
+            int t = 0;
+            foreach (var it in TodoList.Items)
+            {
+                if (it == x) break;
+                t += RowHeight(it) + Gap;
+            }
+            return t;
+        }
 
         protected override Size CardSize()
         {
@@ -324,7 +358,7 @@ namespace Glasswing
 
         void ClampScroll()
         {
-            int max = Math.Max(0, TodoList.Items.Count * pitch - ListH);
+            int max = Math.Max(0, TotalH() - ListH);
             scroll = Math.Max(0, Math.Min(max, scroll));
         }
 
@@ -346,9 +380,9 @@ namespace Glasswing
             editing = it;
             typing = true;
             // прокручиваем, чтобы дело было видно
-            int i = TodoList.Items.IndexOf(it);
-            if (i * pitch < scroll) scroll = i * pitch;
-            else if ((i + 1) * pitch > scroll + ListH) scroll = (i + 1) * pitch - ListH;
+            int y0 = OffsetOf(it), y1 = y0 + RowHeight(it) + Gap;
+            if (y0 < scroll) scroll = y0;
+            else if (y1 > scroll + ListH) scroll = y1 - ListH;
             ClampScroll();
             input.Begin(it.Text, true);
             Invalidate();
@@ -410,6 +444,7 @@ namespace Glasswing
 
         protected override bool HandleMouseDown(Point p)
         {
+            hint.Hide();
             down = hits.KeyAt(p);
             return down != null;
         }
@@ -437,11 +472,16 @@ namespace Glasswing
             string k = hits.KeyAt(e.Location);
             Cursor = hits.CursorAt(e.Location);
             if (k != hot) { hot = k; Invalidate(); }
+            // полный текст дела, если он не влез в строки
+            string full = null;
+            if (k != null && !cutText.TryGetValue(k, out full)) full = null;
+            hint.Set(full != null ? k : null, full);
         }
 
         protected override void OnMouseLeave(EventArgs e)
         {
             base.OnMouseLeave(e);
+            hint.Set(null, null);
             if (hot != null) { hot = null; Invalidate(); }
         }
 
@@ -451,7 +491,7 @@ namespace Glasswing
             int before = scroll;
             scroll -= e.Delta * pitch / 120;
             ClampScroll();
-            if (scroll != before) { hot = null; Invalidate(); }
+            if (scroll != before) { hot = null; hint.Set(null, null); Invalidate(); }
         }
 
         protected override void AddMenuItems(ContextMenuStrip menu)
@@ -474,11 +514,18 @@ namespace Glasswing
         {
             hits.Clear();
             shownRows.Clear();
+            cutText.Clear();
             var list = TodoList.Items;
 
-            Ui.Text2(g, "ДЕЛА НА СЕГОДНЯ", Ui.Font(11, true), Ui.Faint, new RectangleF(pad, top, w - 2 * pad, headH), Ui.Left);
+            // счётчик справа, заголовок занимает только оставшееся место
+            float countW = 0;
             if (list.Count > 0)
-                Ui.Text2(g, list.Count(i => i.Done) + " из " + list.Count, Ui.Font(12), Ui.Faint, new RectangleF(pad, top, w - 2 * pad, headH), Ui.Right);
+            {
+                string cnt = list.Count(i => i.Done) + " из " + list.Count;
+                countW = TextFit.Width(cnt, Ui.Font(12)) + Ui.S(10);
+                Ui.Text2(g, cnt, Ui.Font(12), Ui.Faint, new RectangleF(pad, top, w - 2 * pad, headH), Ui.Right);
+            }
+            Ui.Text2(g, "ДЕЛА НА СЕГОДНЯ", Ui.Font(11, true), Ui.Faint, new RectangleF(pad, top, Math.Max(0, w - 2 * pad - countW), headH), Ui.Left);
 
             int y = ListTop;
             if (list.Count > 0)
@@ -487,15 +534,17 @@ namespace Glasswing
                 var view = new Rectangle(0, y, w, lh);
                 var st = g.Save();
                 g.SetClip(view);
+                int total = 0;
                 for (int i = 0; i < list.Count; i++)
                 {
-                    int ry = y + i * pitch - scroll;
-                    if (ry + rowH < y || ry > y + lh) continue;
-                    DrawItem(g, list[i], i, new Rectangle(pad - Ui.S(6), ry, w - 2 * pad + Ui.S(12), rowH), view);
+                    int rh = RowHeight(list[i]);
+                    int ry = y + total - scroll;
+                    total += rh + Gap;
+                    if (ry + rh < y || ry > y + lh) continue;
+                    DrawItem(g, list[i], i, new Rectangle(pad - Ui.S(6), ry, w - 2 * pad + Ui.S(12), rh), view);
                 }
                 g.Restore(st);
                 // полоска прокрутки, если дела не помещаются
-                int total = list.Count * pitch;
                 if (total > lh)
                 {
                     float bh = Math.Max(Ui.S(18), lh * (float)lh / total);
@@ -523,7 +572,11 @@ namespace Glasswing
                 if (input.Text.Length == 0) Ui.Text2(g, "Новое дело…", f, Ui.Faint, tr, Ui.Left);
                 input.Draw(g, tr, f, Ui.Text, Color.FromArgb(90, Ui.Accent));
             }
-            else if (draft.Length > 0) Ui.Text2(g, draft, f, Ui.Muted, tr, Ui.Left);
+            else if (draft.Length > 0)
+            {
+                Ui.Text2(g, draft, f, Ui.Muted, tr, Ui.Left);
+                if (TextFit.Width(draft, f) > tr.Width - 1) cutText["in"] = draft;
+            }
             else Ui.Text2(g, "Новое дело…", f, Ui.Faint, tr, Ui.Left);
             hits.Add(inputRect, "in", BeginNew, Cursors.IBeam);
         }
@@ -536,7 +589,7 @@ namespace Glasswing
             else if (hot == key) Ui.FillRound(g, row, Ui.S(8), Ui.Panel);
 
             float d = Ui.S(18);
-            var box = new RectangleF(pad, row.Y + (rowH - d) / 2f, d, d);
+            var box = new RectangleF(pad, row.Y + (rowH - d) / 2f, d, d);   // кружок напротив первой строки
             float pw = 1.5f * Ui.Scale;
             var inner = new RectangleF(box.X + pw / 2, box.Y + pw / 2, d - pw, d - pw);
             if (it.Done)
@@ -554,10 +607,17 @@ namespace Glasswing
             else
                 using (var p = new Pen(Color.FromArgb(hot == key ? 190 : 115, 255, 255, 255), pw)) g.DrawEllipse(p, inner);
 
-            var tr = new RectangleF(box.Right + Ui.S(10), row.Y, row.Right - Ui.S(6) - box.Right - Ui.S(10), rowH);
-            if (edit) input.Draw(g, tr, Ui.Font(14), Ui.Text, Color.FromArgb(90, Ui.Accent));
-            else if (it.Done) Ui.Text2(g, it.Text, strike, Ui.Faint, tr, Ui.Left);
-            else Ui.Text2(g, it.Text, Ui.Font(14), Ui.Text, tr, Ui.Left);
+            float tx = box.Right + Ui.S(10), tw = row.Right - Ui.S(6) - tx;
+            // при правке строка ввода одна и прокручивается вбок: так виден весь текст
+            if (edit) input.Draw(g, new RectangleF(tx, row.Y, tw, row.Height), Ui.Font(14), Ui.Text, Color.FromArgb(90, Ui.Accent));
+            else
+            {
+                var fit = Wrap(it);
+                float ly = row.Y + (rowH - lineH) / 2f;
+                for (int k = 0; k < fit.Lines.Count; k++)   // зачёркивание у каждой строки своё
+                    Ui.Text2(g, fit.Lines[k], it.Done ? strike : Ui.Font(14), it.Done ? Ui.Faint : Ui.Text, new RectangleF(tx, ly + k * lineH, tw, lineH), Ui.Left);
+                if (fit.Cut) cutText[key] = it.Text;
+            }
 
             var hit = Rectangle.Intersect(row, view);
             shownRows.Add(new KeyValuePair<Rectangle, TodoItem>(hit, it));
@@ -578,6 +638,7 @@ namespace Glasswing
                 TodoList.Changed -= ListChanged;
                 tick.Dispose();
                 input.Dispose();
+                hint.Dispose();
                 strike.Dispose();
             }
             base.Dispose(disposing);
@@ -614,7 +675,10 @@ namespace Glasswing
                 if (host.IsHandleCreated) host.BeginInvoke(new Action(Kick));
             };
             Box.KeyUp += (s, e) => Kick();
-            blink.Tick += (s, e) => { caret = !caret; host.Invalidate(); };
+            // без фокуса курсор не рисуется: не перерисовываем окно зря
+            blink.Tick += (s, e) => { if (!Box.Focused) return; caret = !caret; host.Invalidate(); };
+            Box.GotFocus += (s, e) => Kick();
+            Box.LostFocus += (s, e) => host.Invalidate();
         }
 
         public string Text => Box.Text;
@@ -665,7 +729,7 @@ namespace Glasswing
             if (full - scroll < room) scroll = Math.Max(0, full - room);
 
             var st = g.Save();
-            g.SetClip(r);
+            g.SetClip(r, System.Drawing.Drawing2D.CombineMode.Intersect);   // не выходим ни за поле, ни за уже заданную область
             float x0 = r.X - scroll;
             float th = f.GetHeight(g);
             float ty = r.Y + (r.Height - th) / 2;
@@ -693,5 +757,190 @@ namespace Glasswing
         }
 
         public void Dispose() { blink.Dispose(); }
+    }
+
+    // Перенос текста по словам на несколько строк; что не влезло, заканчивается многоточием.
+    // Слово режется, только если оно одно шире строки. Мерим на своей картинке с теми же
+    // настройками, что при отрисовке: размеры нужны и вне OnPaint (высота карточки).
+    static class TextFit
+    {
+        public class Fit
+        {
+            public readonly List<string> Lines = new List<string>();
+            public bool Cut;
+        }
+
+        static readonly StringFormat Measure = new StringFormat { FormatFlags = StringFormatFlags.NoWrap };
+        static readonly Dictionary<string, Fit> cache = new Dictionary<string, Fit>();
+        static Bitmap probeBmp;
+        static Graphics probe;
+
+        static Graphics Probe
+        {
+            get
+            {
+                if (probe == null)
+                {
+                    probeBmp = new Bitmap(1, 1, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                    probe = Graphics.FromImage(probeBmp);
+                    Ui.Prepare(probe);
+                }
+                return probe;
+            }
+        }
+
+        public static float Width(string s, Font f)
+        {
+            return string.IsNullOrEmpty(s) ? 0 : Probe.MeasureString(s, f, PointF.Empty, Measure).Width;
+        }
+
+        public static float LineHeight(Font f) { return f.GetHeight(Probe); }
+
+        public static Fit Wrap(string s, Font f, float width, int maxLines)
+        {
+            s = s ?? "";
+            string key = f.Name + "|" + f.Size + "|" + (int)f.Style + "|" + width + "|" + maxLines + "|" + s;
+            Fit fit;
+            if (cache.TryGetValue(key, out fit)) return fit;
+            fit = Build(s, f, Math.Max(1, width - 1), Math.Max(1, maxLines));
+            if (cache.Count > 4000) cache.Clear();
+            cache[key] = fit;
+            return fit;
+        }
+
+        static Fit Build(string s, Font f, float width, int max)
+        {
+            var fit = new Fit();
+            var words = new List<string>(s.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries));
+            int i = 0;
+            while (i < words.Count && fit.Lines.Count < max)
+            {
+                bool last = fit.Lines.Count == max - 1;
+                string w = words[i];
+                if (Width(w, f) > width)
+                {
+                    if (last)
+                    {
+                        fit.Lines.Add(Chop(string.Join(" ", words.Skip(i)), f, width));
+                        fit.Cut = true;
+                        return fit;
+                    }
+                    // одно слово шире строки: здесь без разрыва никак
+                    int n = Prefix(w, f, width, "");
+                    fit.Lines.Add(w.Substring(0, n));
+                    words[i] = w.Substring(n);
+                    continue;
+                }
+                string line = w;
+                i++;
+                while (i < words.Count && Width(line + " " + words[i], f) <= width) line += " " + words[i++];
+                if (last && i < words.Count)
+                {
+                    // последняя строка: убираем слова, пока не влезет многоточие
+                    fit.Cut = true;
+                    string cut = line + "…";
+                    while (Width(cut, f) > width)
+                    {
+                        int sp = line.LastIndexOf(' ');
+                        if (sp <= 0) { cut = Chop(line, f, width); break; }
+                        line = line.Substring(0, sp);
+                        cut = line + "…";
+                    }
+                    line = cut;
+                }
+                fit.Lines.Add(line);
+            }
+            return fit;
+        }
+
+        // Самое длинное начало строки (не меньше одного знака), которое с хвостом tail влезает в ширину.
+        static int Prefix(string s, Font f, float width, string tail)
+        {
+            int lo = 1, hi = s.Length;
+            while (lo < hi)
+            {
+                int mid = (lo + hi + 1) / 2;
+                if (Width(s.Substring(0, mid).TrimEnd() + tail, f) <= width) lo = mid;
+                else hi = mid - 1;
+            }
+            // пару суррогатов (эмодзи) не разрываем
+            if (lo > 1 && lo < s.Length && char.IsHighSurrogate(s[lo - 1])) lo--;
+            return lo;
+        }
+
+        static string Chop(string s, Font f, float width)
+        {
+            return s.Substring(0, Prefix(s, f, width, "…")).TrimEnd() + "…";
+        }
+    }
+
+    // Подсказка с полным текстом: появляется, когда мышь задержалась на одном месте.
+    // key — что сейчас под мышью (null — ничего); пока key тот же, подсказка не мигает.
+    class GlassHint : IDisposable
+    {
+        readonly Control host;
+        readonly ToolTip tip = new ToolTip { ShowAlways = true, UseAnimation = false, UseFading = false };
+        readonly Timer wait = new Timer { Interval = 600 };
+        string key, text;
+        bool shown;
+
+        public GlassHint(Control host)
+        {
+            this.host = host;
+            wait.Tick += (s, e) => { wait.Stop(); Pop(); };
+        }
+
+        public void Set(string k, string t)
+        {
+            if (string.IsNullOrEmpty(t)) k = null;
+            if (k == key) return;
+            Hide();
+            key = k;
+            text = t;
+            if (k != null) wait.Start();
+        }
+
+        public void Hide()
+        {
+            wait.Stop();
+            key = null;
+            if (!shown) return;
+            shown = false;
+            try { tip.Hide(host); } catch { }
+        }
+
+        void Pop()
+        {
+            if (key == null || host.IsDisposed || !host.Visible) return;
+            var p = host.PointToClient(Cursor.Position);
+            if (!host.ClientRectangle.Contains(p)) { Hide(); return; }
+            try
+            {
+                tip.Show(Breaks(text, 60), host, p.X + Ui.S(12), p.Y + Ui.S(22), 8000);
+                shown = true;
+            }
+            catch { }
+        }
+
+        // Длинный текст подсказки разбиваем на строки по словам.
+        static string Breaks(string s, int width)
+        {
+            var sb = new StringBuilder();
+            int len = 0;
+            foreach (var w in s.Split(' '))
+            {
+                if (len > 0 && len + 1 + w.Length > width) { sb.Append('\n'); len = 0; }
+                else if (len > 0) { sb.Append(' '); len++; }
+                sb.Append(w);
+                len += w.Length;
+            }
+            return sb.ToString();
+        }
+
+        public void Dispose()
+        {
+            wait.Dispose();
+            tip.Dispose();
+        }
     }
 }

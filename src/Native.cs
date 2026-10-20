@@ -107,6 +107,124 @@ namespace Glasswing
             }
         }
 
+        // ---------------------------------------------------------------- виджеты и «Свернуть все окна»
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string cls, string title);
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongPtr")] static extern IntPtr GetWindowLongPtr64(IntPtr h, int i);
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr")] static extern IntPtr SetWindowLongPtr64(IntPtr h, int i, IntPtr v);
+        [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+        [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+        [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, System.Text.StringBuilder sb, int max);
+        delegate void WinEventProc(IntPtr hook, uint ev, IntPtr h, int obj, int child, uint thread, uint time);
+        [DllImport("user32.dll")] static extern IntPtr SetWinEventHook(uint min, uint max, IntPtr mod, WinEventProc proc, uint pid, uint tid, uint flags);
+        [DllImport("user32.dll")] static extern bool UnhookWinEvent(IntPtr hook);
+
+        const uint EVENT_SYSTEM_FOREGROUND = 0x3, EVENT_SYSTEM_MINIMIZESTART = 0x16, WINEVENT_OUTOFCONTEXT = 0;
+
+        static readonly System.Collections.Generic.List<Form> desk = new System.Collections.Generic.List<Form>();
+        static WinEventProc deskProc;     // держим ссылку, иначе сборщик мусора уберёт делегат из-под хука
+        static IntPtr fgHook, minHook;
+        static Timer deskLater;
+
+        // Рабочий стол (Progman). Окна, которыми он владеет, «Свернуть все окна» не трогает.
+        static IntPtr Desktop() { return FindWindow("Progman", null); }
+
+        static IntPtr GetOwner(IntPtr h) { return IntPtr.Size == 8 ? GetWindowLongPtr64(h, -8) : (IntPtr)GetWindowLong(h, -8); }
+
+        // Делает окно подчинённым рабочему столу (GWL_HWNDPARENT). WinForms может вернуть своего владельца,
+        // поэтому вызываем и при создании окна, и потом время от времени: лишней работы нет, если всё на месте.
+        public static void OwnByDesktop(IntPtr h)
+        {
+            try
+            {
+                IntPtr d = Desktop();
+                if (d == IntPtr.Zero || h == IntPtr.Zero || GetOwner(h) == d) return;
+                if (IntPtr.Size == 8) SetWindowLongPtr64(h, -8, d);
+                else SetWindowLong(h, -8, d.ToInt32());
+            }
+            catch { }
+        }
+
+        // Виджет, которому положено быть на экране. Wanted ставит только само приложение (Show/Hide/Visible),
+        // поэтому то, что спрятано нарочно («Спрятать всё на 1 час»), обратно не показываем.
+        public interface IDeskWidget { bool Wanted { get; } }
+
+        // Запоминает окно виджета и при первом вызове ставит хук на смену активного окна.
+        public static void KeepOnDesktop(Form f)
+        {
+            if (!f.IsHandleCreated) return;
+            OwnByDesktop(f.Handle);
+            if (!desk.Contains(f))
+            {
+                desk.Add(f);
+                f.Disposed += (s, e) => desk.Remove(f);
+            }
+            if (deskProc != null) return;
+            deskProc = OnWinEvent;
+            try
+            {
+                fgHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, IntPtr.Zero, deskProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+                // свои же окна, которые кто-то свернул
+                minHook = SetWinEventHook(EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MINIMIZESTART, IntPtr.Zero, deskProc,
+                    (uint)System.Diagnostics.Process.GetCurrentProcess().Id, 0, WINEVENT_OUTOFCONTEXT);
+            }
+            catch (Exception ex) { Log.Write("хук рабочего стола: " + ex.Message); }
+            deskLater = new Timer { Interval = 400 };
+            deskLater.Tick += (s, e) => { deskLater.Stop(); RestoreWidgets(); };
+            Application.ApplicationExit += (s, e) =>
+            {
+                if (fgHook != IntPtr.Zero) UnhookWinEvent(fgHook);
+                if (minHook != IntPtr.Zero) UnhookWinEvent(minHook);
+                fgHook = minHook = IntPtr.Zero;
+                deskLater.Dispose();
+            };
+        }
+
+        // Приходит в поток окон через очередь сообщений (WINEVENT_OUTOFCONTEXT).
+        static void OnWinEvent(IntPtr hook, uint ev, IntPtr h, int obj, int child, uint thread, uint time)
+        {
+            try
+            {
+                if (obj != 0 || h == IntPtr.Zero) return;
+                bool now = false;
+                if (ev == EVENT_SYSTEM_MINIMIZESTART) now = desk.Exists(f => !f.IsDisposed && f.IsHandleCreated && f.Handle == h);
+                else
+                {
+                    var sb = new System.Text.StringBuilder(32);
+                    GetClassName(h, sb, sb.Capacity);
+                    string cls = sb.ToString();
+                    now = cls == "WorkerW" || cls == "Progman";
+                    if (!now) { foreach (var f in desk.ToArray()) if (!f.IsDisposed && f.IsHandleCreated) OwnByDesktop(f.Handle); return; }
+                }
+                if (!now) return;
+                RestoreWidgets();
+                // оболочка прячет окна с анимацией: проверяем ещё раз чуть позже
+                deskLater.Stop();
+                deskLater.Start();
+            }
+            catch (Exception ex) { Log.Write("хук рабочего стола: " + ex.Message); }
+        }
+
+        // Возвращает свёрнутые или скрытые оболочкой виджеты, не забирая фокус.
+        static void RestoreWidgets()
+        {
+            foreach (var f in desk.ToArray())
+            {
+                var w = f as IDeskWidget;
+                if (f.IsDisposed || !f.IsHandleCreated || w == null || !w.Wanted) continue;
+                IntPtr h = f.Handle;
+                if (!IsWindow(h)) continue;
+                OwnByDesktop(h);
+                bool icon = IsIconic(h);
+                if (!icon && IsWindowVisible(h)) continue;
+                ShowWindow(h, icon ? 4 : 8);                          // SW_SHOWNOACTIVATE / SW_SHOWNA
+                // поверх окон, если так настроено; без активации и без сдвига
+                SetWindowPos(h, f.TopMost ? new IntPtr(-1) : IntPtr.Zero, 0, 0, 0, 0,
+                    0x1 | 0x2 | 0x10 | 0x40 | (f.TopMost ? 0u : 0x4u));  // NOSIZE | NOMOVE | NOACTIVATE | SHOWWINDOW [| NOZORDER]
+            }
+        }
+
         [StructLayout(LayoutKind.Sequential)] struct MSG { public IntPtr hwnd; public int message; public IntPtr wParam; public IntPtr lParam; public int time; public int x, y; }
         [DllImport("user32.dll")] static extern int GetMessage(out MSG m, IntPtr h, int min, int max);
         [DllImport("user32.dll")] static extern bool TranslateMessage(ref MSG m);

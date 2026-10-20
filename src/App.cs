@@ -11,7 +11,7 @@ namespace Glasswing
     class App
     {
         public const string Name = "Glasswing";
-        public const string Version = "1.5";
+        public const string Version = "1.5.1";
         public const string ShowEventName = @"Local\Glasswing_Show";
         public const string ExitEventName = @"Local\Glasswing_Exit";
 

@@ -423,12 +423,16 @@ namespace Glasswing
         public readonly FolderInfo Info;
         readonly FolderModule folder;
         readonly ToolTip tip = new ToolTip();
+        readonly GlassHint hint;
+        readonly GlassInput search;
         readonly Timer watch = new Timer { Interval = 1000 };
-        readonly int btnSz = Ui.S(56), iconPx = Ui.S(40), tile = Ui.S(54), gap = Ui.S(6), pad = Ui.S(12), stripH = Ui.S(34);
+        // плитка: значок сверху, под ним название в две строки
+        readonly int btnSz = Ui.S(56), iconPx = Ui.S(40), tileW = Ui.S(76), tileH = Ui.S(86), gap = Ui.S(6), pad = Ui.S(12), stripH = Ui.S(34);
         readonly int gridTop;
         readonly List<FolderItem> items = new List<FolderItem>();
+        List<FolderItem> shown = new List<FolderItem>();   // то, что подходит под поиск
         string sig = "";
-        bool expanded, up, hoverBtn, dragOut;
+        bool expanded, up, hoverBtn, dragOut, hotClear;
         int hot = -1, scroll, downIdx = -1, menuIdx = -1;
         Point downPt;
         Size shelf;
@@ -439,6 +443,18 @@ namespace Glasswing
             folder = m;
             Info = info;
             Text = info.Title;
+            hint = new GlassHint(this);
+            search = new GlassInput(this, 60);
+            search.Box.TextChanged += (s, e) => Refilter(true);
+            search.Submit += () =>
+            {
+                if (shown.Count == 0) return;
+                var it = shown[0];
+                SetExpanded(false);
+                Open(it);
+            };
+            // Esc: сначала стираем поиск, потом сворачиваем полку
+            search.Cancel += () => { if (search.Text.Length > 0) search.Box.Text = ""; else SetExpanded(false); };
             gridTop = stripH + Ui.S(4);
             AllowDrop = true;
             tip.SetToolTip(this, info.Title);
@@ -457,7 +473,7 @@ namespace Glasswing
         static float F(double v) { return (float)(v * Ui.Scale); }
 
         int ExpW => Info.ShelfW > 0 ? Info.ShelfW : S(380);
-        int ExpH => Info.ShelfH > 0 ? Info.ShelfH : S(200);
+        int ExpH => Info.ShelfH > 0 ? Info.ShelfH : S(232);
 
         protected override Size CardSize() { return expanded ? shelf : new Size(btnSz, btnSz); }
 
@@ -518,7 +534,25 @@ namespace Glasswing
             }
             sig = string.Join("|", entries.Select(e => e.Name));
             hot = -1;
+            Refilter(false);
+        }
+
+        void Refilter(bool toTop)
+        {
+            shown = Shelf.Filter(items, x => x.Name, search == null ? "" : search.Text);
+            hot = -1;
+            downIdx = menuIdx = -1;
+            if (toTop) scroll = 0;
             scroll = Math.Min(scroll, MaxScroll());
+            if (hint != null) hint.Set(null, null);
+            Invalidate();
+        }
+
+        // Клавиатуру полка берёт, только пока раскрыта.
+        void FocusSearch()
+        {
+            if (!expanded) return;
+            if (!search.Box.Focused) search.Begin(search.Text, false);
             Invalidate();
         }
 
@@ -582,25 +616,25 @@ namespace Glasswing
         int Columns()
         {
             int avail = ClientSize.Width - 2 * pad;
-            return Math.Max(1, (int)Math.Floor((avail + gap) / (double)(tile + gap)));
+            return Math.Max(1, (int)Math.Floor((avail + gap) / (double)(tileW + gap)));
         }
 
         Rectangle TileRect(int i)
         {
             int cols = Columns();
             int row = i / cols, col = i % cols;
-            int gridW = cols * tile + (cols - 1) * gap;
+            int gridW = cols * tileW + (cols - 1) * gap;
             int x0 = (ClientSize.Width - gridW) / 2;
-            return new Rectangle(x0 + col * (tile + gap), gridTop + row * (tile + gap) - scroll, tile, tile);
+            return new Rectangle(x0 + col * (tileW + gap), gridTop + row * (tileH + gap) - scroll, tileW, tileH);
         }
 
         int MaxScroll()
         {
-            int n = items.Count;
+            int n = shown.Count;
             if (n == 0) return 0;
             int cols = Columns();
             int rows = (n + cols - 1) / cols;
-            int contentH = rows * tile + (rows - 1) * gap;
+            int contentH = rows * tileH + (rows - 1) * gap;
             int viewH = ClientSize.Height - gridTop - pad;
             return Math.Max(0, contentH - viewH);
         }
@@ -608,7 +642,7 @@ namespace Glasswing
         int HitIndex(Point p)
         {
             if (!expanded || p.Y < gridTop) return -1;
-            for (int i = 0; i < items.Count; i++) if (TileRect(i).Contains(p)) return i;
+            for (int i = 0; i < shown.Count; i++) if (TileRect(i).Contains(p)) return i;
             return -1;
         }
 
@@ -624,7 +658,7 @@ namespace Glasswing
                 int x = Math.Max(wa.Left, Math.Min(home.X, wa.Right - fullW));
                 up = home.Y + fullH > wa.Bottom;
                 int y = up ? home.Y + btnSz - fullH : home.Y;
-                MinimumSize = new Size(S(140), gridTop + tile + pad);
+                MinimumSize = new Size(S(140), gridTop + tileH + pad);
                 shelf = new Size(fullW, fullH);
                 Bounds = new Rectangle(x, y, fullW, fullH);
                 tip.SetToolTip(this, null);
@@ -636,6 +670,9 @@ namespace Glasswing
                 Bounds = new Rectangle(home, new Size(btnSz, btnSz));
                 hot = -1;
                 scroll = 0;
+                hotClear = false;
+                hint.Hide();
+                search.End();   // поиск сбрасывается, клавиатура отпускается
                 tip.SetToolTip(this, Info.Title);
             }
             Invalidate();
@@ -677,8 +714,10 @@ namespace Glasswing
                 var ds = SystemInformation.DragSize;
                 if (Math.Abs(e.X - downPt.X) > ds.Width || Math.Abs(e.Y - downPt.Y) > ds.Height)
                 {
-                    string path = items[downIdx].Path;
+                    string path = downIdx < shown.Count ? shown[downIdx].Path : null;
                     downIdx = -1;
+                    if (path == null) return;
+                    hint.Hide();
                     dragOut = true;
                     try { DoDragDrop(new DataObject(DataFormats.FileDrop, new[] { path }), DragDropEffects.Move | DragDropEffects.Copy | DragDropEffects.Link); }
                     catch (Exception ex) { Log.Write("папка, перетаскивание: " + ex.Message); }
@@ -689,14 +728,20 @@ namespace Glasswing
             }
             int edge = Locked ? 0 : Shelf.EdgeHit(e.Location, ClientSize, up);
             int h = edge != 0 ? -1 : HitIndex(e.Location);
-            Cursor = edge != 0 ? Shelf.EdgeCursor(edge) : h >= 0 || e.Y < stripH ? Cursors.Hand : Cursors.Default;
-            if (h != hot) { hot = h; Invalidate(); }
+            var sr = Shelf.SearchRect(ClientSize.Width, pad, stripH);
+            bool inSearch = edge == 0 && sr.Contains(e.Location);
+            bool hc = inSearch && search.Text.Length > 0 && Shelf.ClearRect(sr).Contains(e.Location);
+            Cursor = edge != 0 ? Shelf.EdgeCursor(edge) : hc ? Cursors.Hand : inSearch ? Cursors.IBeam : h >= 0 || e.Y < stripH ? Cursors.Hand : Cursors.Default;
+            if (h != hot || hc != hotClear) { hot = h; hotClear = hc; Invalidate(); }
+            // полное название значка рядом с мышью
+            hint.Set(h >= 0 ? "i:" + h + ":" + shown[h].Path : null, h >= 0 ? shown[h].Name : null);
         }
 
         protected override void OnMouseLeave(EventArgs e)
         {
             base.OnMouseLeave(e);
-            if (hot != -1 || hoverBtn) { hot = -1; hoverBtn = false; Invalidate(); }
+            hint.Set(null, null);
+            if (hot != -1 || hoverBtn || hotClear) { hot = -1; hoverBtn = false; hotClear = false; Invalidate(); }
         }
 
         protected override void OnMouseDown(MouseEventArgs e)
@@ -707,6 +752,7 @@ namespace Glasswing
 
         protected override bool HandleMouseDown(Point p)
         {
+            hint.Hide();
             if (expanded)
             {
                 int edge = Locked ? 0 : Shelf.EdgeHit(p, ClientSize, up);
@@ -719,6 +765,14 @@ namespace Glasswing
                     if (up) SaveHome(); else folder.Save();
                     return true;
                 }
+                // поле поиска: щелчок ставит туда курсор, «×» стирает запрос
+                var sr = Shelf.SearchRect(ClientSize.Width, pad, stripH);
+                if (sr.Contains(p))
+                {
+                    if (search.Text.Length > 0 && Shelf.ClearRect(sr).Contains(p)) search.Box.Text = "";
+                    FocusSearch();
+                    return true;
+                }
                 int i = HitIndex(p);
                 if (i >= 0) { downIdx = i; downPt = p; return true; }
             }
@@ -729,7 +783,7 @@ namespace Glasswing
                 WNative.DragWindow(this);
                 if (Location != before) { SaveHome(); return true; }
             }
-            if (!expanded) SetExpanded(true);
+            if (!expanded) { SetExpanded(true); FocusSearch(); }
             else if (inStrip) SetExpanded(false);
             return true;
         }
@@ -740,7 +794,7 @@ namespace Glasswing
             {
                 int was = downIdx;
                 downIdx = -1;
-                if (HitIndex(e.Location) == was) Open(items[was]);
+                if (was < shown.Count && HitIndex(e.Location) == was) Open(shown[was]);
             }
             if (e.Button == MouseButtons.Right) menuIdx = HitIndex(e.Location);
             base.OnMouseUp(e);
@@ -750,8 +804,9 @@ namespace Glasswing
         {
             base.OnMouseWheel(e);
             if (!expanded) return;
-            scroll = Math.Max(0, Math.Min(MaxScroll(), scroll - (int)Math.Round(e.Delta / 120.0 * (tile + gap))));
+            scroll = Math.Max(0, Math.Min(MaxScroll(), scroll - (int)Math.Round(e.Delta / 120.0 * (tileH + gap))));
             hot = HitIndex(e.Location);
+            hint.Set(null, null);
             Invalidate();
         }
 
@@ -759,7 +814,7 @@ namespace Glasswing
         protected override void AddMenuItems(ContextMenuStrip menu)
         {
             int at = 0;
-            var it = menuIdx >= 0 && menuIdx < items.Count ? items[menuIdx] : null;
+            var it = menuIdx >= 0 && menuIdx < shown.Count ? shown[menuIdx] : null;
             if (it != null)
             {
                 menu.Items.Insert(at++, new ToolStripMenuItem("Открыть", null, (s, e) => Open(it)) { Font = new Font(menu.Font, FontStyle.Bold) });
@@ -797,9 +852,11 @@ namespace Glasswing
         void DrawShelf(Graphics g, int cw, int ch)
         {
             // строка сверху: название наведённого значка, иначе название виджета
-            bool isHot = hot >= 0 && hot < items.Count;
-            string text = isHot ? items[hot].Name : Info.Title + "  ·  " + items.Count;
-            Shelf.DrawStrip(g, text, Ui.Font(13, true), isHot ? ColText : ColMuted, cw, pad, stripH);
+            bool isHot = hot >= 0 && hot < shown.Count;
+            string text = isHot ? shown[hot].Name : search.Text.Length > 0 ? "Найдено: " + shown.Count : Info.Title + "  ·  " + items.Count;
+            var sr = Shelf.SearchRect(cw, pad, stripH);
+            Shelf.DrawStrip(g, text, Ui.Font(13, true), isHot ? ColText : ColMuted, cw, pad, stripH, sr.Width + S(8));
+            Shelf.DrawSearch(g, sr, search, hotClear);
 
             var grid = new Rectangle(0, gridTop, cw, ch - gridTop);
             g.SetClip(grid);
@@ -810,18 +867,27 @@ namespace Glasswing
                 using (var path = Ui.Round(box, S(12))) g.DrawPath(dash, path);
                 Ui.Text2(g, "Перетащите сюда ярлыки", Ui.Font(12.5), ColMuted, box, CenterWrap);
             }
-            for (int i = 0; i < items.Count; i++)
+            else if (shown.Count == 0)
+            {
+                var box = new RectangleF(pad, gridTop + S(2), cw - 2 * pad, ch - gridTop - pad - S(2));
+                Ui.Text2(g, "Ничего не найдено", Ui.Font(12.5), ColMuted, box, CenterWrap);
+            }
+            for (int i = 0; i < shown.Count; i++)
             {
                 var rc = TileRect(i);
                 if (rc.Bottom < gridTop || rc.Top > ch) continue;
                 bool on = i == hot;
                 if (on) Ui.FillRound(g, rc, S(12), ColTileHot);
-                var bmp = items[i].Bmp;
+                var bmp = shown[i].Bmp;
                 if (bmp != null)
                 {
                     float sz = on ? iconPx + S(4) : iconPx;
-                    g.DrawImage(bmp, rc.X + (rc.Width - sz) / 2, rc.Y + (rc.Height - sz) / 2, sz, sz);
+                    float cy = rc.Y + S(8) + iconPx / 2f;
+                    g.DrawImage(bmp, rc.X + (rc.Width - sz) / 2, cy - sz / 2, sz, sz);
                 }
+                // название под значком: до двух строк, слова не рвём
+                var tr = new RectangleF(rc.X + S(3), rc.Y + S(52), rc.Width - S(6), rc.Height - S(53));
+                Shelf.DrawCaption(g, shown[i].Name, Ui.Font(11), ColText, tr, 2, false, true);
             }
             Shelf.DrawScroll(g, cw, ch, gridTop, pad, scroll, MaxScroll());
             g.ResetClip();
@@ -840,6 +906,8 @@ namespace Glasswing
             {
                 watch.Dispose();
                 tip.Dispose();
+                hint.Dispose();
+                search.Dispose();
                 foreach (var it in items) if (it.Bmp != null) it.Bmp.Dispose();
                 items.Clear();
             }
@@ -852,10 +920,13 @@ namespace Glasswing
     {
         static float F(double v) { return (float)(v * Ui.Scale); }
 
-        // Текст строки и стрелка «свернуть» справа.
-        public static void DrawStrip(Graphics g, string text, Font font, Color col, int cw, int pad, int stripH)
+        static readonly StringFormat CaptionLine = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
+
+        // Текст строки и стрелка «свернуть» справа; reserve — место под поле поиска перед стрелкой.
+        public static void DrawStrip(Graphics g, string text, Font font, Color col, int cw, int pad, int stripH, int reserve = 0)
         {
-            Ui.Text2(g, text, font, col, new RectangleF(pad, 0, cw - 2 * pad - Ui.S(22), stripH), Ui.Left, true);
+            float tw = cw - 2 * pad - Ui.S(22) - reserve;
+            if (tw > Ui.S(12)) Ui.Text2(g, text, font, col, new RectangleF(pad, 0, tw, stripH), Ui.Left, true);
             using (var pen = new Pen(Color.FromArgb(190, 255, 255, 255), Math.Max(1.5f, F(1.8))) { StartCap = LineCap.Round, EndCap = LineCap.Round })
             {
                 float ax = cw - pad - F(8), ay = stripH / 2f, a = F(5);
@@ -895,6 +966,73 @@ namespace Glasswing
             var badge = new RectangleF(cw - tw - F(4), F(4), tw, bh);
             Ui.FillRound(g, badge, bh / 2, Ui.Accent);
             Ui.Text2(g, txt, bf, Ui.AccentInk, badge, Ui.Center);
+        }
+
+        // Подпись плитки по словам в несколько строк, по центру; true, если название не влезло целиком.
+        public static bool DrawCaption(Graphics g, string s, Font f, Color c, RectangleF box, int maxLines, bool bottom, bool shadow)
+        {
+            var fit = TextFit.Wrap(s, f, box.Width, maxLines);
+            float lh = TextFit.LineHeight(f);
+            float y = bottom ? box.Bottom - fit.Lines.Count * lh : box.Y;
+            for (int k = 0; k < fit.Lines.Count; k++)
+                Ui.Text2(g, fit.Lines[k], f, c, new RectangleF(box.X, y + k * lh, box.Width, lh), CaptionLine, shadow);
+            return fit.Cut;
+        }
+
+        // Поиск по названию: без учёта регистра, «ё» как «е», каждое слово запроса должно найтись.
+        // Названия, которые с запроса начинаются, идут первыми.
+        public static List<T> Filter<T>(List<T> all, Func<T, string> name, string query)
+        {
+            string q = Norm(query);
+            if (q.Length == 0) return new List<T>(all);
+            var words = q.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            return all.Select(x => new { x, n = Norm(name(x)) })
+                      .Where(a => words.All(w => a.n.Contains(w)))
+                      .OrderBy(a => a.n.StartsWith(q, StringComparison.Ordinal) ? 0 : 1)
+                      .Select(a => a.x).ToList();
+        }
+
+        static string Norm(string s) { return (s ?? "").Trim().ToLowerInvariant().Replace('ё', 'е'); }
+
+        // Поле поиска в строке сверху, перед стрелкой «свернуть».
+        public static Rectangle SearchRect(int cw, int pad, int stripH)
+        {
+            int avail = cw - 2 * pad - Ui.S(22);
+            int w = Math.Max(Ui.S(64), Math.Min(Ui.S(170), avail * 9 / 20));
+            int h = Ui.S(24);
+            return new Rectangle(cw - pad - Ui.S(22) - w, (stripH - h) / 2, w, h);
+        }
+
+        // Кнопка «×» в правом конце поля.
+        public static Rectangle ClearRect(Rectangle sr) { return new Rectangle(sr.Right - sr.Height, sr.Y, sr.Height, sr.Height); }
+
+        public static void DrawSearch(Graphics g, Rectangle sr, GlassInput input, bool hotClear)
+        {
+            bool focused = input.Box.Focused, has = input.Text.Length > 0;
+            Ui.FillRound(g, sr, sr.Height / 2f, Color.FromArgb(focused ? 30 : 18, 255, 255, 255));
+            if (focused) Ui.StrokeRound(g, sr, sr.Height / 2f, Color.FromArgb(150, Ui.Accent));
+            using (var pen = new Pen(Color.FromArgb(170, 255, 255, 255), Math.Max(1.2f, F(1.4))) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                // лупа
+                float cx = sr.X + F(12), cy = sr.Y + sr.Height / 2f - F(1), r = F(4);
+                g.DrawEllipse(pen, cx - r, cy - r, 2 * r, 2 * r);
+                g.DrawLine(pen, cx + r * 0.7f, cy + r * 0.7f, cx + r * 1.7f, cy + r * 1.7f);
+            }
+            var tr = new RectangleF(sr.X + F(22), sr.Y, sr.Width - F(22) - (has ? sr.Height : F(8)), sr.Height);
+            var f = Ui.Font(12);
+            if (!has) Ui.Text2(g, "Поиск…", f, Ui.Faint, tr, Ui.Left);
+            if (tr.Width > 0) input.Draw(g, tr, f, Ui.Text, Color.FromArgb(90, Ui.Accent));
+            if (has)
+            {
+                var cr = ClearRect(sr);
+                float mx = cr.X + cr.Width / 2f, my = cr.Y + cr.Height / 2f, a = F(3.5);
+                if (hotClear) Ui.FillRound(g, new RectangleF(mx - F(8), my - F(8), F(16), F(16)), F(8), Color.FromArgb(30, 255, 255, 255));
+                using (var pen = new Pen(Color.FromArgb(hotClear ? 240 : 160, 255, 255, 255), Math.Max(1.2f, F(1.5))) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                {
+                    g.DrawLine(pen, mx - a, my - a, mx + a, my + a);
+                    g.DrawLine(pen, mx - a, my + a, mx + a, my - a);
+                }
+            }
         }
 
         // Край полки, за который её можно растянуть: код для WM_NCLBUTTONDOWN или 0.

@@ -8,7 +8,7 @@ namespace Glasswing
 {
     // Основа любого виджета на рабочем столе: стеклянная карточка без рамки,
     // которую можно перетащить, закрепить и вывести поверх окон. Позиция запоминается.
-    abstract class GlassCard : Form
+    abstract class GlassCard : Form, WNative.IDeskWidget
     {
         protected readonly Module Mod;
         bool noGlass;
@@ -25,7 +25,12 @@ namespace Glasswing
             BackColor = Color.Black;              // на стекле чёрный = прозрачно
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.Opaque, true);
             TopMost = Settings.GetBool(owner.Id, "TopMost", false);
-            toolTimer.Tick += (s, e) => { if (IsHandleCreated) WNative.EnsureToolWindow(Handle); };
+            toolTimer.Tick += (s, e) =>
+            {
+                if (!IsHandleCreated) return;
+                WNative.EnsureToolWindow(Handle);
+                WNative.OwnByDesktop(Handle);   // после перезапуска проводника владельца нужно вернуть
+            };
         }
 
         protected override CreateParams CreateParams
@@ -36,6 +41,15 @@ namespace Glasswing
                 cp.ExStyle |= 0x80;               // TOOLWINDOW: нет в Alt+Tab
                 return cp;
             }
+        }
+
+        // Показан ли виджет по воле приложения (а не оболочки Windows).
+        public bool Wanted { get; private set; }
+
+        protected override void SetVisibleCore(bool value)
+        {
+            Wanted = value;
+            base.SetVisibleCore(value);
         }
 
         public bool Locked
@@ -105,6 +119,7 @@ namespace Glasswing
         {
             base.OnHandleCreated(e);
             WNative.EnsureToolWindow(Handle);
+            WNative.KeepOnDesktop(this);   // «Свернуть все окна» (Win+D) виджеты не прячет
             WNative.RoundDark(Handle);
             ApplyGlass();
         }
@@ -113,6 +128,7 @@ namespace Glasswing
         {
             base.OnShown(e);
             WNative.EnsureToolWindow(Handle);
+            WNative.OwnByDesktop(Handle);
             FitSize();   // Windows может растянуть окно при первом показе
             toolTimer.Start();
         }

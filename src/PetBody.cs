@@ -269,7 +269,7 @@ namespace Glasswing
     // ---------------------------------------------------------------- окно
 
     // Окно с попиксельной прозрачностью: виден только сам питомец, остальное прозрачно и пропускает клики.
-    class PetForm : Form
+    class PetForm : Form, WNative.IDeskWidget
     {
         public PetForm()
         {
@@ -285,6 +285,27 @@ namespace Glasswing
         }
 
         protected override bool ShowWithoutActivation => true;
+
+        // Показано ли окно по воле приложения: скрытое нарочно хук рабочего стола не возвращает.
+        public bool Wanted { get; private set; }
+
+        protected override void SetVisibleCore(bool value)
+        {
+            Wanted = value;
+            base.SetVisibleCore(value);
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            WNative.KeepOnDesktop(this);   // «Свернуть все окна» (Win+D) питомца не прячет
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            WNative.OwnByDesktop(Handle);
+        }
 
         [StructLayout(LayoutKind.Sequential)] struct PT { public int x, y; }
         [StructLayout(LayoutKind.Sequential)] struct SZ { public int cx, cy; }

@@ -113,16 +113,17 @@ namespace Glasswing
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
         }
 
-        // Переключатель-«таблетка», как в центре управления.
-        public static void Toggle(Graphics g, Rectangle r, bool on, bool enabled = true)
+        // Переключатель-«таблетка», как в центре управления; без темы рисуется тёмным.
+        public static void Toggle(Graphics g, Rectangle r, bool on, bool enabled = true, CenterTheme t = null)
         {
+            t = t ?? CenterTheme.Dark;
             var rc = new RectangleF(r.X, r.Y, r.Width, r.Height);
-            Color fill = !enabled ? Color.FromArgb(10, 255, 255, 255) : on ? Accent : Color.FromArgb(16, 255, 255, 255);
+            Color fill = !enabled ? t.ToggleNone : on ? t.Accent : t.ToggleOff;
             FillRound(g, rc, r.Height / 2f, fill);
-            if (!on) StrokeRound(g, rc, r.Height / 2f, Color.FromArgb(enabled ? 72 : 30, 255, 255, 255));
+            if (!on) StrokeRound(g, rc, r.Height / 2f, enabled ? t.ToggleStroke : t.ToggleStrokeOff);
             float k = r.Height - S(8);
             float x = on ? r.Right - S(4) - k : r.X + S(4);
-            using (var b = new SolidBrush(on ? AccentInk : Color.FromArgb(enabled ? 255 : 90, 214, 219, 228)))
+            using (var b = new SolidBrush(on ? t.AccentInk : enabled ? t.ToggleKnob : Color.FromArgb(90, t.ToggleKnob)))
                 g.FillEllipse(b, x, r.Y + S(4), k, k);
         }
 
@@ -156,6 +157,81 @@ namespace Glasswing
             using (var body = new SolidBrush(Color.FromArgb(255, 20, 30, 44)))
                 g.FillEllipse(body, 29.5f, 22, 5, 30);
             g.Restore(st);
+        }
+    }
+
+    // Тема центра управления: цвета, тонировка акрила и вид рамки окна. Виджеты на столе всегда в тёмной.
+    class CenterTheme
+    {
+        public bool IsDark;
+        public Color Text, Muted, Faint, Accent, AccentInk, Panel, PanelHi, Line, Wash, Edge, Fallback;
+        public Color Stroke, Icon, Glyph, TileOn, TileOff, BadgeOff, DotOff, SelFill, SelTab, SelStroke, BtnHover;
+        public Color ToggleOff, ToggleNone, ToggleStroke, ToggleStrokeOff, ToggleKnob;
+        public int TintR, TintG, TintB, TintA, MoveA, Border;   // Border: цвет рамки DWM, 0x00BBGGRR
+
+        public static readonly CenterTheme Dark = new CenterTheme
+        {
+            IsDark = true,
+            Text = Ui.Text, Muted = Ui.Muted, Faint = Ui.Faint, Accent = Ui.Accent, AccentInk = Ui.AccentInk,
+            Panel = Ui.Panel, PanelHi = Ui.PanelHi, Line = Color.FromArgb(22, 255, 255, 255), Wash = Color.FromArgb(10, 255, 255, 255),
+            Edge = Ui.Edge, Fallback = Ui.Fallback,
+            Stroke = Color.FromArgb(36, 255, 255, 255), Icon = Color.White, Glyph = Color.FromArgb(214, 219, 228),
+            TileOn = Color.FromArgb(36, 255, 255, 255), TileOff = Color.FromArgb(14, 255, 255, 255),
+            BadgeOff = Color.FromArgb(20, 255, 255, 255), DotOff = Color.FromArgb(64, 255, 255, 255),
+            SelFill = Color.FromArgb(36, 110, 215, 200), SelTab = Color.FromArgb(31, 110, 215, 200), SelStroke = Color.FromArgb(140, 110, 215, 200),
+            BtnHover = Ui.PanelHi,
+            ToggleOff = Color.FromArgb(16, 255, 255, 255), ToggleNone = Color.FromArgb(10, 255, 255, 255),
+            ToggleStroke = Color.FromArgb(72, 255, 255, 255), ToggleStrokeOff = Color.FromArgb(30, 255, 255, 255), ToggleKnob = Color.FromArgb(214, 219, 228),
+            TintR = 18, TintG = 21, TintB = 30, TintA = 215, MoveA = 230, Border = 140 + (144 << 8) + (160 << 16),
+        };
+
+        // светлая: тёмный текст, акцент темнее, чтобы читался на светлом; панели чуть темнее фона
+        public static readonly CenterTheme Light = new CenterTheme
+        {
+            IsDark = false,
+            Text = Color.FromArgb(255, 22, 26, 34), Muted = Color.FromArgb(255, 70, 78, 92), Faint = Color.FromArgb(255, 98, 106, 120),
+            Accent = Color.FromArgb(255, 0, 120, 108), AccentInk = Color.White,
+            Panel = Color.FromArgb(14, 0, 0, 0), PanelHi = Color.FromArgb(26, 0, 0, 0), Line = Color.FromArgb(28, 0, 0, 0),
+            Wash = Color.FromArgb(40, 255, 255, 255), Edge = Color.FromArgb(60, 0, 0, 0), Fallback = Color.FromArgb(255, 238, 240, 244),
+            Stroke = Color.FromArgb(48, 0, 0, 0), Icon = Color.FromArgb(255, 36, 42, 54), Glyph = Color.FromArgb(255, 40, 46, 58),
+            TileOn = Color.FromArgb(22, 0, 0, 0), TileOff = Color.FromArgb(9, 0, 0, 0),
+            BadgeOff = Color.FromArgb(16, 0, 0, 0), DotOff = Color.FromArgb(60, 0, 0, 0),
+            SelFill = Color.FromArgb(30, 0, 120, 108), SelTab = Color.FromArgb(26, 0, 120, 108), SelStroke = Color.FromArgb(170, 0, 120, 108),
+            BtnHover = Color.FromArgb(20, 0, 0, 0),
+            ToggleOff = Color.FromArgb(150, 255, 255, 255), ToggleNone = Color.FromArgb(8, 0, 0, 0),
+            ToggleStroke = Color.FromArgb(120, 0, 0, 0), ToggleStrokeOff = Color.FromArgb(36, 0, 0, 0), ToggleKnob = Color.FromArgb(255, 70, 76, 88),
+            TintR = 243, TintG = 245, TintB = 249, TintA = 200, MoveA = 235, Border = 196 + (200 << 8) + (208 << 16),
+        };
+
+        public static readonly string[] Names = { "Тёмная", "Светлая", "Как в Windows" };
+
+        public static string Choice
+        {
+            get { string s = Settings.GetString("app", "Theme", Names[0]); return Array.IndexOf(Names, s) < 0 ? Names[0] : s; }
+            set { Settings.Set("app", "Theme", value); }
+        }
+
+        // Режим приложений Windows; нет значения (старая Windows) значит светлый, как у самой Windows.
+        public static bool WindowsLight()
+        {
+            try
+            {
+                using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+                {
+                    object v = k == null ? null : k.GetValue("AppsUseLightTheme");
+                    return v == null || Convert.ToInt32(v) != 0;
+                }
+            }
+            catch { return false; }
+        }
+
+        public static CenterTheme Current
+        {
+            get
+            {
+                string c = Choice;
+                return c == Names[1] || (c == Names[2] && WindowsLight()) ? Light : Dark;
+            }
         }
     }
 

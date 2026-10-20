@@ -68,7 +68,7 @@ namespace Glasswing
 
         public PetChar Char => PetChar.Find(Settings.GetString(Id, "Char", "kitsune"));
 
-        // Смена персонажа: рост, еда, настроение и напоминания остаются, а имя у каждого персонажа своё.
+        // Смена персонажа: у каждого своё имя, рост, еда и настроение; напоминания и заметки общие.
         public void SetChar(PetChar c)
         {
             if (c == null) return;
@@ -76,7 +76,7 @@ namespace Glasswing
             Settings.Set(Id, "Char", c.Id);
             if (Running) { life.SwitchChar(old, c); return; }
             var st = PetState.Load();
-            st.SwapName(old, c); st.Save();
+            st.SwapChar(old, c); st.Save();
         }
 
         public override void Start()
@@ -122,6 +122,14 @@ namespace Glasswing
 
     class Reminder { public DateTime At; public string Text; }
 
+    // Успехи одного персонажа, пока выбран другой: рост, дни вместе, еда, настроение.
+    class PetProgress
+    {
+        public double Xp, Food = 70, Mood = 75;
+        public DateTime Born = DateTime.Now;
+        public int Fed, Pats;
+    }
+
     // Память питомца: %APPDATA%\Glasswing\pet.json. Настройки окна живут в settings.json, в разделе "fox".
     class PetState
     {
@@ -134,6 +142,20 @@ namespace Glasswing
         public List<string> Notes = new List<string>();
         public List<Reminder> Reminders = new List<Reminder>();
         public Dictionary<string, string> Names = new Dictionary<string, string>();   // имя каждого персонажа
+        // Успехи остальных персонажей; у выбранного они в полях выше. Пока персонаж не выбран, его еда и настроение замирают.
+        public Dictionary<string, PetProgress> Chars = new Dictionary<string, PetProgress>();
+
+        // Смена персонажа: прежний уносит своё имя и успехи, новый получает свои (или начинает малышом).
+        public void SwapChar(PetChar old, PetChar c)
+        {
+            if (old != null && old.Id == c.Id) return;
+            SwapName(old, c);
+            if (old != null) Chars[old.Id] = new PetProgress { Xp = Xp, Food = Food, Mood = Mood, Born = Born, Fed = Fed, Pats = Pats };
+            PetProgress p;
+            if (!Chars.TryGetValue(c.Id, out p)) p = new PetProgress();
+            Chars.Remove(c.Id);
+            Xp = p.Xp; Food = p.Food; Mood = p.Mood; Born = p.Born; Fed = p.Fed; Pats = p.Pats;
+        }
 
         // Запоминаем имя прежнего персонажа и берём имя нового (или его имя по умолчанию).
         public void SwapName(PetChar old, PetChar c)
@@ -185,6 +207,26 @@ namespace Glasswing
                 s.Last = Date(j.ContainsKey("Last") ? j["Last"] : null, s.Last);
                 s.Xp = Num(j, "Xp", 0); s.Food = Num(j, "Food", 70); s.Mood = Num(j, "Mood", 75);
                 s.Fed = (int)Num(j, "Fed", 0); s.Pats = (int)Num(j, "Pats", 0);
+                if (j.TryGetValue("Chars", out o) && o is Dictionary<string, object>)
+                {
+                    foreach (var kv in (Dictionary<string, object>)o)
+                    {
+                        var c = kv.Value as Dictionary<string, object>;
+                        if (c == null) continue;
+                        s.Chars[kv.Key] = new PetProgress
+                        {
+                            Xp = Num(c, "Xp", 0), Food = Num(c, "Food", 70), Mood = Num(c, "Mood", 75),
+                            Born = Date(c.ContainsKey("Born") ? c["Born"] : null, DateTime.Now),
+                            Fed = (int)Num(c, "Fed", 0), Pats = (int)Num(c, "Pats", 0),
+                        };
+                    }
+                }
+                else
+                {
+                    // старая общая память: каждый персонаж начинает с общих успехов, дальше растут порознь
+                    foreach (var c in PetChar.Table)
+                        s.Chars[c.Id] = new PetProgress { Xp = s.Xp, Food = s.Food, Mood = s.Mood, Born = s.Born, Fed = s.Fed, Pats = s.Pats };
+                }
                 if (j.TryGetValue("Notes", out o)) s.Notes = Items(o).OfType<string>().Where(x => x.Length > 0).ToList();
                 if (j.TryGetValue("Reminders", out o))
                     foreach (var r in Items(o).OfType<Dictionary<string, object>>())
@@ -206,6 +248,11 @@ namespace Glasswing
                 ["Name"] = Name, ["UserName"] = UserName, ["Born"] = Born.ToString("o"), ["Xp"] = Xp, ["Food"] = Food, ["Mood"] = Mood,
                 ["Last"] = Last.ToString("o"), ["Fed"] = Fed, ["Pats"] = Pats, ["Notes"] = Notes,
                 ["Names"] = Names.ToDictionary(kv => kv.Key, kv => (object)kv.Value),
+                ["Chars"] = Chars.ToDictionary(kv => kv.Key, kv => (object)new Dictionary<string, object>
+                {
+                    ["Xp"] = kv.Value.Xp, ["Food"] = kv.Value.Food, ["Mood"] = kv.Value.Mood,
+                    ["Born"] = kv.Value.Born.ToString("o"), ["Fed"] = kv.Value.Fed, ["Pats"] = kv.Value.Pats,
+                }),
                 ["Reminders"] = Reminders.Select(r => new Dictionary<string, object> { ["At"] = r.At.ToString("o"), ["Text"] = r.Text }).ToList(),
             };
             try
@@ -373,10 +420,12 @@ namespace Glasswing
             if (c == ch) return;
             var art = PetArt.Load(c);
             var was = pet.Art;
+            var prev = ch ?? old;   // успехи уносит тот, кто сейчас на экране
             pet.Art = art;
             ch = c;
             was.Dispose();
-            P.SwapName(old, c);
+            P.SwapChar(prev, c);
+            pet.Stage = GetStage();
             UpdateInfo();
             SaveState();
             pet.Celebrate();

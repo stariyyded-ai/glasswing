@@ -230,24 +230,66 @@ namespace Glasswing
         public double Lat, Lon;
     }
 
-    // Open-Meteo: прогноз и поиск городов без ключа.
+    // Прогноз и поиск городов без ключа. Первым идёт Open-Meteo; если он недоступен
+    // (у части российских провайдеров он висит), берём MET Norway, затем wttr.in.
+    // Ответы запасных служб пересобираем в формат Open-Meteo, который читает WeatherData.Parse.
     static class WeatherApi
     {
         static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
         public static readonly string CachePath = Path.Combine(Settings.Dir, "weather.json");
+        // MET Norway и Nominatim требуют подпись с контактом, без неё отвечают 403.
+        static readonly string Agent = App.Name + "/" + App.Version + " github.com/" + Updater.Repo;
 
-        static string Get(string url)
+        // Служба, ответившая последней: в следующий раз спрашиваем её первой.
+        static volatile int okForecast, okSearch;
+        // Смещение от UTC по городам: MET Norway отдаёт время только в UTC.
+        static readonly Dictionary<string, int> offsets = new Dictionary<string, int>();
+        static int netReady;
+
+        static void Prepare()
         {
+            if (Interlocked.Exchange(ref netReady, 1) == 1) return;
             try { ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12; } catch { }
+            // Без лишнего круга «100-continue» и с короткой памятью DNS: после смены сети адреса не залипают.
+            try { ServicePointManager.Expect100Continue = false; } catch { }
+            try { ServicePointManager.DnsRefreshTimeout = 60000; } catch { }
+        }
+
+        // Запрос с жёстким потолком по времени. Поиск прокси (WPAD) и DNS в .NET Framework идут вне Timeout,
+        // поэтому запрос живёт в отдельной задаче и обрывается через Abort, если не уложился.
+        static string Get(string url, int timeout)
+        {
+            Prepare();
             var rq = (HttpWebRequest)WebRequest.Create(url);
-            rq.Timeout = 15000;
-            rq.ReadWriteTimeout = 15000;
-            rq.UserAgent = App.Name + "/" + App.Version;
+            rq.Timeout = timeout;
+            rq.ReadWriteTimeout = timeout;
+            rq.UserAgent = Agent;
             rq.Accept = "application/json";
+            try
+            {
+                rq.Proxy = WebRequest.DefaultWebProxy;
+                if (rq.Proxy != null) rq.Proxy.Credentials = CredentialCache.DefaultCredentials;
+            }
+            catch { }
             // Без сжатия: встроенная распаковка .NET Framework ломается на части ответов
             // («недопустимые данные при декодировании»). Если gzip всё же пришёл, распаковываем сами.
             rq.AutomaticDecompression = DecompressionMethods.None;
             rq.Headers[HttpRequestHeader.AcceptEncoding] = "identity";
+            var task = System.Threading.Tasks.Task.Run(() => Read(rq));
+            bool done;
+            try { done = task.Wait(timeout + 1000); }
+            catch (AggregateException ex) { throw ex.InnerException ?? ex; }
+            if (!done)
+            {
+                try { rq.Abort(); } catch { }
+                task.ContinueWith(x => { var e = x.Exception; }, System.Threading.Tasks.TaskContinuationOptions.OnlyOnFaulted);
+                throw new TimeoutException("Время ожидания операции истекло");
+            }
+            return task.Result;
+        }
+
+        static string Read(HttpWebRequest rq)
+        {
             byte[] body;
             using (var rs = (HttpWebResponse)rq.GetResponse())
             using (var st = rs.GetResponseStream())
@@ -268,40 +310,437 @@ namespace Glasswing
 
         static string Coord(double v) { return v.ToString("0.####", Inv); }
 
-        public static string Forecast(double lat, double lon)
+        static string PlaceKey(double lat, double lon) { return Math.Round(lat, 2).ToString(Inv) + "," + Math.Round(lon, 2).ToString(Inv); }
+
+        // Перебирает службы, начиная с последней удачной. Каждая неудача пишется в журнал коротко.
+        static T Try<T>(string what, string[] names, Func<int, T> call, ref int ok, Func<T, bool> good)
         {
-            return Get("https://api.open-meteo.com/v1/forecast?latitude=" + Coord(lat) + "&longitude=" + Coord(lon) +
-                "&current=temperature_2m,apparent_temperature,weather_code,is_day" +
-                "&hourly=precipitation_probability,weather_code" +
-                "&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=4");
+            Exception last = null;
+            T empty = default(T);
+            bool gotEmpty = false;
+            int first = ok;
+            for (int k = 0; k < names.Length; k++)
+            {
+                int i = (first + k) % names.Length;
+                try
+                {
+                    T r = call(i);
+                    if (good(r)) { ok = i; return r; }
+                    if (!gotEmpty) { empty = r; gotEmpty = true; }
+                }
+                catch (Exception ex)
+                {
+                    last = ex;
+                    Log.Write(what + ", " + names[i] + ": " + ex.Message);
+                }
+            }
+            if (gotEmpty) return empty;
+            throw last ?? new Exception("нет ответа");
         }
 
-        public static List<WeatherPlace> Search(string name)
+        static readonly string[] ForecastNames = { "open-meteo", "met.no", "wttr.in" };
+
+        public static string Forecast(double lat, double lon)
         {
-            string json = Get("https://geocoding-api.open-meteo.com/v1/search?name=" + Uri.EscapeDataString(name) + "&count=5&language=ru&format=json");
-            var list = new List<WeatherPlace>();
+            int ok = okForecast;
+            string json = Try("погода", ForecastNames, i =>
+            {
+                string s = i == 0 ? OpenMeteo(lat, lon) : i == 1 ? MetNo(lat, lon) : Wttr(lat, lon);
+                WeatherData.Parse(s);   // кривой ответ считаем отказом службы
+                return s;
+            }, ref ok, s => true);
+            okForecast = ok;
+            return json;
+        }
+
+        static string OpenMeteo(double lat, double lon)
+        {
+            string json = Get("https://api.open-meteo.com/v1/forecast?latitude=" + Coord(lat) + "&longitude=" + Coord(lon) +
+                "&current=temperature_2m,apparent_temperature,weather_code,is_day" +
+                "&hourly=precipitation_probability,weather_code" +
+                "&daily=weather_code,temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=4", 8000);
             var root = Json.Parse(json) as Dictionary<string, object>;
             object o;
-            var res = root != null && root.TryGetValue("results", out o) ? o as List<object> : null;
-            if (res == null) return list;
+            if (root != null && root.TryGetValue("utc_offset_seconds", out o) && o is double) Remember(lat, lon, (int)(double)o);
+            return json;
+        }
+
+        static void Remember(double lat, double lon, int offset)
+        {
+            lock (offsets) offsets[PlaceKey(lat, lon)] = offset;
+        }
+
+        // Смещение для города: из прошлых ответов, из кэша, по часовому поясу компьютера или по долготе.
+        static int OffsetFor(double lat, double lon)
+        {
+            int off;
+            lock (offsets) if (offsets.TryGetValue(PlaceKey(lat, lon), out off)) return off;
+            var c = LoadCache(lat, lon);
+            if (c != null) return c.Offset;
+            double mine = TimeZoneInfo.Local.GetUtcOffset(DateTime.UtcNow).TotalHours;
+            if (Math.Abs(lon / 15 - mine) <= 1.5) return (int)(mine * 3600);
+            return (int)Math.Round(lon / 15) * 3600;
+        }
+
+        // MET Norway Locationforecast 2.0 compact: ряд по часам (дальше по 6 часов) в UTC.
+        static string MetNo(double lat, double lon)
+        {
+            string json = Get("https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=" + Coord(lat) + "&lon=" + Coord(lon), 10000);
+            var root = Json.Parse(json) as Dictionary<string, object>;
+            var props = Obj(root, "properties");
+            var ts = Arr(props, "timeseries");
+            if (ts.Count == 0) throw new FormatException("пустой прогноз");
+            int offset = OffsetFor(lat, lon);
+            var now = DateTime.UtcNow;
+            var b = new OmBuilder(offset);
+            bool cur = false;
+            foreach (var x in ts)
+            {
+                var e = x as Dictionary<string, object>;
+                DateTime t;
+                if (e == null || !(Str(e, "time") is string) ||
+                    !DateTime.TryParse(Str(e, "time"), Inv, DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out t)) continue;
+                var data = Obj(e, "data");
+                var inst = Obj(Obj(data, "instant"), "details");
+                double temp = Num(inst, "air_temperature");
+                var n1 = Obj(data, "next_1_hours");
+                var n6 = Obj(data, "next_6_hours");
+                int code1 = MetCode(Str(Obj(n1, "summary"), "symbol_code"));
+                int code6 = MetCode(Str(Obj(n6, "summary"), "symbol_code"));
+                if (code1 < 0) code1 = MetCode(Str(Obj(Obj(data, "next_12_hours"), "summary"), "symbol_code"));
+                if (code6 < 0) code6 = code1;
+                // текущая погода: последняя точка не позже чем через полчаса
+                if (!double.IsNaN(temp) && (!cur || t <= now.AddMinutes(30)))
+                {
+                    double feels = Feels(temp, Num(inst, "wind_speed", 0), Num(inst, "relative_humidity", double.NaN));
+                    b.Current(temp, feels, code1 >= 0 ? code1 : code6, SunUp(lat, lon, now));
+                    cur = true;
+                }
+                if (n1 != null && code1 >= 0) b.Hour(t, code1, -1);
+                var d6 = Obj(n6, "details");
+                b.Day(t, n1 != null && code1 >= 0 ? code1 : code6, temp);
+                b.Day(t, -1, Num(d6, "air_temperature_max"));
+                b.Day(t, -1, Num(d6, "air_temperature_min"));
+            }
+            if (!cur) throw new FormatException("нет температуры");
+            return b.Json();
+        }
+
+        // wttr.in j1: числа строками, время местное, часы через три.
+        static string Wttr(double lat, double lon)
+        {
+            string json = Get("https://wttr.in/" + Coord(lat) + "," + Coord(lon) + "?format=j1", 12000);
+            var root = Json.Parse(json) as Dictionary<string, object>;
+            if (root == null) throw new FormatException("ответ не похож на JSON");
+            var cc = Arr(root, "current_condition").FirstOrDefault() as Dictionary<string, object>;
+            if (cc == null) throw new FormatException("нет current_condition");
+            // смещение: местное время наблюдения минус то же время в UTC
+            int offset = OffsetFor(lat, lon);
+            DateTime lt, ut;
+            if (DateTime.TryParseExact(Str(cc, "localObsDateTime") ?? "", "yyyy-MM-dd hh:mm tt", Inv, DateTimeStyles.None, out lt) &&
+                DateTime.TryParseExact(Str(cc, "observation_time") ?? "", "hh:mm tt", Inv, DateTimeStyles.None, out ut))
+            {
+                double m = (lt.TimeOfDay - ut.TimeOfDay).TotalMinutes;
+                if (m < -12 * 60) m += 24 * 60;
+                if (m > 14 * 60) m -= 24 * 60;
+                offset = (int)(Math.Round(m / 15) * 15 * 60);
+                Remember(lat, lon, offset);
+            }
+            var b = new OmBuilder(offset);
+            double temp = SNum(cc, "temp_C");
+            if (double.IsNaN(temp)) throw new FormatException("нет температуры");
+            double feels = SNum(cc, "FeelsLikeC");
+            b.Current(temp, double.IsNaN(feels) ? temp : feels, WwoCode((int)SNum(cc, "weatherCode", -1)), SunUp(lat, lon, DateTime.UtcNow));
+            foreach (var x in Arr(root, "weather"))
+            {
+                var w = x as Dictionary<string, object>;
+                DateTime day;
+                if (w == null || !DateTime.TryParseExact(Str(w, "date") ?? "", "yyyy-MM-dd", Inv, DateTimeStyles.None, out day)) continue;
+                b.LocalDay(day, -1, SNum(w, "maxtempC"));
+                b.LocalDay(day, -1, SNum(w, "mintempC"));
+                foreach (var y in Arr(w, "hourly"))
+                {
+                    var h = y as Dictionary<string, object>;
+                    if (h == null) continue;
+                    double hm = SNum(h, "time");
+                    if (double.IsNaN(hm)) continue;
+                    var t = day.AddHours(Math.Floor(hm / 100));
+                    int code = WwoCode((int)SNum(h, "weatherCode", -1));
+                    int prob = (int)Math.Max(SNum(h, "chanceofrain", -1), Math.Max(SNum(h, "chanceofsnow", -1), SNum(h, "chanceofthunder", -1)));
+                    b.LocalDay(day, code, double.NaN);
+                    // карточка ждёт ряд по часам: каждую точку растягиваем на три часа
+                    for (int k = 0; k < 3; k++) b.LocalHour(t.AddHours(k), code, prob);
+                }
+            }
+            return b.Json();
+        }
+
+        // Собирает JSON в том виде, в каком его отдаёт Open-Meteo (время местное, без секунд).
+        sealed class OmBuilder
+        {
+            readonly int offset;
+            readonly SortedDictionary<DateTime, int[]> hours = new SortedDictionary<DateTime, int[]>();
+            readonly SortedDictionary<DateTime, double[]> days = new SortedDictionary<DateTime, double[]>();
+            double temp = double.NaN, feels;
+            int code = -1;
+            bool day = true;
+
+            public OmBuilder(int offset) { this.offset = offset; }
+
+            public void Current(double t, double f, int c, bool d) { temp = t; feels = f; code = c; day = d; }
+
+            public void Hour(DateTime utc, int c, int prob) { LocalHour(utc.AddSeconds(offset), c, prob); }
+
+            public void LocalHour(DateTime t, int c, int prob)
+            {
+                t = new DateTime(t.Year, t.Month, t.Day, t.Hour, 0, 0);
+                if (!hours.ContainsKey(t)) hours[t] = new[] { c, prob };
+            }
+
+            public void Day(DateTime utc, int c, double t) { LocalDay(utc.AddSeconds(offset).Date, c, t); }
+
+            // День: самый тяжёлый код погоды (как daily weather_code у Open-Meteo), максимум и минимум.
+            public void LocalDay(DateTime date, int c, double t)
+            {
+                double[] v;
+                if (!days.TryGetValue(date.Date, out v)) days[date.Date] = v = new[] { -1, double.NaN, double.NaN };
+                if (c > v[0]) v[0] = c;
+                if (!double.IsNaN(t))
+                {
+                    if (double.IsNaN(v[1]) || t > v[1]) v[1] = t;
+                    if (double.IsNaN(v[2]) || t < v[2]) v[2] = t;
+                }
+            }
+
+            static object N(double v) { return double.IsNaN(v) ? null : (object)Math.Round(v, 1); }
+            static object C(double v) { return v < 0 ? null : (object)v; }
+
+            public string Json()
+            {
+                var root = new Dictionary<string, object>();
+                root["utc_offset_seconds"] = offset;
+                var cur = new Dictionary<string, object>();
+                cur["temperature_2m"] = N(temp);
+                cur["apparent_temperature"] = N(feels);
+                cur["weather_code"] = C(code);
+                cur["is_day"] = day ? 1 : 0;
+                root["current"] = cur;
+                var h = new Dictionary<string, object>();
+                h["time"] = hours.Keys.Select(t => t.ToString("yyyy-MM-dd'T'HH:mm", Inv)).ToList();
+                h["precipitation_probability"] = hours.Values.Select(v => C(v[1])).ToList();
+                h["weather_code"] = hours.Values.Select(v => C(v[0])).ToList();
+                root["hourly"] = h;
+                var dy = new Dictionary<string, object>();
+                dy["time"] = days.Keys.Select(t => t.ToString("yyyy-MM-dd", Inv)).ToList();
+                dy["weather_code"] = days.Values.Select(v => C(v[0])).ToList();
+                dy["temperature_2m_max"] = days.Values.Select(v => N(v[1])).ToList();
+                dy["temperature_2m_min"] = days.Values.Select(v => N(v[2])).ToList();
+                root["daily"] = dy;
+                return Glasswing.Json.Write(root);
+            }
+        }
+
+        // Ощущаемая температура по Стедману (ветер в м/с), как у Open-Meteo.
+        static double Feels(double t, double wind, double rh)
+        {
+            if (double.IsNaN(rh)) rh = 70;
+            double e = rh / 100 * 6.105 * Math.Exp(17.27 * t / (237.7 + t));
+            return t + 0.33 * e - 0.70 * wind - 4.00;
+        }
+
+        // Солнце над горизонтом (упрощённая формула, точности до пары минут хватает для значка).
+        static bool SunUp(double lat, double lon, DateTime utc)
+        {
+            const double R = Math.PI / 180;
+            double n = (utc - new DateTime(2000, 1, 1, 12, 0, 0, DateTimeKind.Utc)).TotalDays;
+            double g = (357.529 + 0.98560028 * n) * R;
+            double q = 280.459 + 0.98564736 * n;
+            double l = (q + 1.915 * Math.Sin(g) + 0.020 * Math.Sin(2 * g)) * R;
+            double eps = (23.439 - 0.00000036 * n) * R;
+            double ra = Math.Atan2(Math.Cos(eps) * Math.Sin(l), Math.Cos(l));
+            double dec = Math.Asin(Math.Sin(eps) * Math.Sin(l));
+            double gmst = (18.697374558 + 24.06570982441908 * n) % 24;
+            double ha = (gmst * 15 + lon) * R - ra;
+            double alt = Math.Asin(Math.Sin(lat * R) * Math.Sin(dec) + Math.Cos(lat * R) * Math.Cos(dec) * Math.Cos(ha));
+            return alt > -0.833 * R;
+        }
+
+        // symbol_code MET Norway -> код WMO. Суффиксы _day/_night/_polartwilight отбрасываем.
+        static int MetCode(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return -1;
+            int u = s.IndexOf('_');
+            if (u > 0) s = s.Substring(0, u);
+            if (s.EndsWith("andthunder")) return 95;
+            switch (s)
+            {
+                case "clearsky": return 0;
+                case "fair": return 1;
+                case "partlycloudy": return 2;
+                case "cloudy": return 3;
+                case "fog": return 45;
+                case "lightrain": return 61;
+                case "rain": return 63;
+                case "heavyrain": return 65;
+                case "lightrainshowers": return 80;
+                case "rainshowers": return 81;
+                case "heavyrainshowers": return 82;
+                // мокрый снег у Open-Meteo отдельного кода не имеет, ближе всего снег
+                case "lightsleet": return 71;
+                case "sleet": return 73;
+                case "heavysleet": return 75;
+                case "lightsleetshowers": return 85;
+                case "sleetshowers": return 85;
+                case "heavysleetshowers": return 86;
+                case "lightsnow": return 71;
+                case "snow": return 73;
+                case "heavysnow": return 75;
+                case "lightsnowshowers": return 85;
+                case "snowshowers": return 85;
+                case "heavysnowshowers": return 86;
+                default: return -1;
+            }
+        }
+
+        // Код погоды WorldWeatherOnline (wttr.in) -> код WMO.
+        static int WwoCode(int c)
+        {
+            switch (c)
+            {
+                case 113: return 0;
+                case 116: return 2;
+                case 119: case 122: return 3;
+                case 143: case 248: return 45;
+                case 260: return 48;
+                case 176: case 353: return 80;
+                case 356: return 81;
+                case 359: return 82;
+                case 179: case 323: case 326: case 317: case 182: return 71;
+                case 329: case 332: case 320: case 227: return 73;
+                case 335: case 338: case 230: return 75;
+                case 350: case 374: case 377: return 77;
+                case 362: case 368: return 85;
+                case 365: case 371: return 86;
+                case 185: case 263: case 266: return 51;
+                case 281: return 56;
+                case 284: return 57;
+                case 293: case 296: return 61;
+                case 299: case 302: return 63;
+                case 305: case 308: return 65;
+                case 311: return 66;
+                case 314: return 67;
+                case 200: case 386: case 389: case 392: case 395: return 95;
+                default: return -1;
+            }
+        }
+
+        static Dictionary<string, object> Obj(Dictionary<string, object> d, string key)
+        {
+            object o;
+            return d != null && d.TryGetValue(key, out o) ? o as Dictionary<string, object> : null;
+        }
+
+        static List<object> Arr(Dictionary<string, object> d, string key)
+        {
+            object o;
+            return d != null && d.TryGetValue(key, out o) ? o as List<object> ?? new List<object>() : new List<object>();
+        }
+
+        static string Str(Dictionary<string, object> d, string key)
+        {
+            object o;
+            return d != null && d.TryGetValue(key, out o) ? o as string : null;
+        }
+
+        static double Num(Dictionary<string, object> d, string key, double def = double.NaN)
+        {
+            object o;
+            return d != null && d.TryGetValue(key, out o) && o is double ? (double)o : def;
+        }
+
+        // Число, записанное строкой (wttr.in, Nominatim) или числом.
+        static double SNum(Dictionary<string, object> d, string key, double def = double.NaN)
+        {
+            object o;
+            if (d == null || !d.TryGetValue(key, out o) || o == null) return def;
+            if (o is double) return (double)o;
+            double v;
+            return o is string && double.TryParse((string)o, NumberStyles.Float, Inv, out v) ? v : def;
+        }
+
+        static readonly string[] SearchNames = { "open-meteo", "nominatim", "photon" };
+
+        // Пустой ответ тоже повод спросить следующую службу: у Open-Meteo бедный список малых городов.
+        public static List<WeatherPlace> Search(string name)
+        {
+            int ok = okSearch;
+            var list = Try("погода, поиск", SearchNames, i => i == 0 ? SearchOpenMeteo(name) : i == 1 ? SearchNominatim(name) : SearchPhoton(name),
+                ref ok, r => r.Count > 0);
+            okSearch = ok;
+            return list;
+        }
+
+        static List<WeatherPlace> SearchOpenMeteo(string name)
+        {
+            string json = Get("https://geocoding-api.open-meteo.com/v1/search?name=" + Uri.EscapeDataString(name) + "&count=5&language=ru&format=json", 8000);
+            var list = new List<WeatherPlace>();
+            var root = Json.Parse(json) as Dictionary<string, object>;
+            if (root == null) throw new FormatException("ответ не похож на JSON");
+            foreach (var x in Arr(root, "results"))
+            {
+                var d = x as Dictionary<string, object>;
+                double la = Num(d, "latitude"), lo = Num(d, "longitude");
+                if (d == null || double.IsNaN(la) || double.IsNaN(lo)) continue;
+                Add(list, Str(d, "name"), la, lo, Str(d, "admin1"), Str(d, "country"));
+            }
+            return list;
+        }
+
+        static List<WeatherPlace> SearchNominatim(string name)
+        {
+            string json = Get("https://nominatim.openstreetmap.org/search?q=" + Uri.EscapeDataString(name) +
+                "&format=jsonv2&limit=5&accept-language=ru&addressdetails=1&featureType=settlement", 10000);
+            var list = new List<WeatherPlace>();
+            var res = Json.Parse(json) as List<object>;
+            if (res == null) throw new FormatException("ответ не похож на JSON");
             foreach (var x in res)
             {
                 var d = x as Dictionary<string, object>;
-                if (d == null || !(d.TryGetValue("latitude", out o) && o is double)) continue;
-                var p = new WeatherPlace { Lat = (double)o };
-                if (!(d.TryGetValue("longitude", out o) && o is double)) continue;
-                p.Lon = (double)o;
-                p.Name = d.TryGetValue("name", out o) ? Convert.ToString(o) : "";
-                var parts = new List<string>();
-                foreach (var k in new[] { "admin1", "country" })
-                {
-                    string s = d.TryGetValue(k, out o) ? Convert.ToString(o) : "";
-                    if (s.Length > 0 && s != p.Name && !parts.Contains(s)) parts.Add(s);
-                }
-                p.Region = string.Join(", ", parts);
-                if (p.Name.Length > 0) list.Add(p);
+                double la = SNum(d, "lat"), lo = SNum(d, "lon");
+                if (d == null || double.IsNaN(la) || double.IsNaN(lo)) continue;
+                var a = Obj(d, "address");
+                string n = Str(d, "name");
+                if (string.IsNullOrEmpty(n)) n = (Str(d, "display_name") ?? "").Split(',')[0].Trim();
+                Add(list, n, la, lo, Str(a, "state") ?? Str(a, "region"), Str(a, "country"));
             }
             return list;
+        }
+
+        static List<WeatherPlace> SearchPhoton(string name)
+        {
+            string json = Get("https://photon.komoot.io/api/?q=" + Uri.EscapeDataString(name) + "&limit=5&osm_tag=place", 10000);
+            var list = new List<WeatherPlace>();
+            var root = Json.Parse(json) as Dictionary<string, object>;
+            if (root == null) throw new FormatException("ответ не похож на JSON");
+            foreach (var x in Arr(root, "features"))
+            {
+                var f = x as Dictionary<string, object>;
+                var c = Arr(Obj(f, "geometry"), "coordinates");
+                var p = Obj(f, "properties");
+                if (c.Count < 2 || !(c[0] is double) || !(c[1] is double) || p == null) continue;
+                Add(list, Str(p, "name"), (double)c[1], (double)c[0], Str(p, "state"), Str(p, "country"));
+            }
+            return list;
+        }
+
+        static void Add(List<WeatherPlace> list, string name, double lat, double lon, params string[] region)
+        {
+            var p = new WeatherPlace { Name = name ?? "", Lat = lat, Lon = lon };
+            var parts = new List<string>();
+            foreach (var s in region)
+                if (!string.IsNullOrEmpty(s) && s != p.Name && !parts.Contains(s)) parts.Add(s);
+            p.Region = string.Join(", ", parts);
+            if (p.Name.Length > 0) list.Add(p);
         }
 
         // Последний удачный ответ храним на диске: после перезапуска без сети есть что показать.

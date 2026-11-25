@@ -309,7 +309,9 @@ namespace Glasswing
         readonly PetBody pet = new PetBody();
         readonly PetForm form = new PetForm();
         readonly PetInput input = new PetInput();
-        readonly Timer anim = new Timer { Interval = 16 }, life = new Timer { Interval = 1000 };
+        readonly PetFrameClock anim;
+        readonly Timer life = new Timer { Interval = 1000 };
+        bool draggingPet;
         readonly Random rnd = new Random();
         readonly PetState P;
         PetChar ch;
@@ -375,14 +377,14 @@ namespace Glasswing
             form.Shown += (s, e) => { anim.Start(); life.Start(); StartAware(); Greet(); };
             input.Submit += OnInput;
 
-            anim.Tick += (s, e) =>
+            anim = new PetFrameClock(form, () =>
             {
-                if (hidden) return;
+                if (hidden || draggingPet) return;
                 try { pet.Animate(); }
                 catch (Exception ex) { Log.Write("питомец, кадр: " + ex.Message); }
                 string ev = pet.Event;
                 if (ev != null) { pet.Event = null; OnPetEvent(ev); }
-            };
+            });
             life.Tick += (s, e) =>
             {
                 try { LifeTick(); }
@@ -413,7 +415,7 @@ namespace Glasswing
         {
             pet.StopMode();
             homeX = null;
-            form.Location = DefaultPos();
+            form.MoveDesktopWindow(DefaultPos());
             SaveState();
         }
 
@@ -436,11 +438,11 @@ namespace Glasswing
 
         public void Dispose()
         {
-            anim.Stop(); life.Stop();
+            anim.Dispose(); life.Stop();
             StopAware();
             pet.StopMode();
             SaveState();
-            anim.Dispose(); life.Dispose();
+            life.Dispose();
             input.Dispose();
             form.Close();
             form.Dispose();
@@ -554,7 +556,7 @@ namespace Glasswing
             P.Last = DateTime.Now;
             if (!form.IsDisposed)
             {
-                var pos = form.Location;
+                var pos = form.NativeLocation;
                 if (pos != savedPos)
                 {
                     savedPos = pos;
@@ -894,9 +896,11 @@ namespace Glasswing
         {
             input.Mode = mode;
             var wa = Screen.FromControl(form).WorkingArea;
-            int x = form.Left + (form.Width - input.Width) / 2;
-            int y = form.Bottom + S(4);
-            if (y + input.Height > wa.Bottom) y = form.Bottom - input.Height - S(2);
+            var position = form.NativeLocation;
+            int x = position.X + (pet.W - input.Width) / 2;
+            int bottom = position.Y + pet.H;
+            int y = bottom + S(4);
+            if (y + input.Height > wa.Bottom) y = bottom - input.Height - S(2);
             input.Location = new Point(Math.Max(wa.Left, Math.Min(wa.Right - input.Width, x)), y);
             input.Box.Text = mode == "name" ? P.Name : "";
             input.Show();
@@ -919,9 +923,11 @@ namespace Glasswing
             if (pet.Mode == 1) pet.StopMode();
             if (!mod.Locked)
             {
-                var before = form.Location;
-                WNative.DragWindow(form);
-                if (form.Location != before) { SaveState(); return; }
+                var before = form.NativeLocation;
+                draggingPet = true;
+                try { WNative.DragWindow(form, before); }
+                finally { draggingPet = false; }
+                if (form.NativeLocation != before) { SaveState(); return; }
             }
             DoPat();
         }

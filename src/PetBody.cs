@@ -252,7 +252,20 @@ namespace Glasswing
                 if (s == null || pos == null) return false;
                 using (var b = new Bitmap(s))
                 {
-                    Parts[key] = new PetPart { Img = new Bitmap(b), X = Num(pos.ContainsKey("x") ? pos["x"] : null), Y = Num(pos.ContainsKey("y") ? pos["y"] : null) };
+                    Bitmap image;
+                    float ratio = Math.Min(300 * Ui.Scale / b.Width, 260 * Ui.Scale / b.Height);
+                    if (Char.Id == PetChar.ImpId && ratio < 1)
+                    {
+                        image = new Bitmap(Math.Max(1, (int)Math.Round(b.Width * ratio)),
+                            Math.Max(1, (int)Math.Round(b.Height * ratio)), PixelFormat.Format32bppPArgb);
+                        using (var g = Graphics.FromImage(image))
+                        {
+                            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                            g.DrawImage(b, new Rectangle(Point.Empty, image.Size));
+                        }
+                    }
+                    else image = new Bitmap(b);
+                    Parts[key] = new PetPart { Img = image, X = Num(pos.ContainsKey("x") ? pos["x"] : null), Y = Num(pos.ContainsKey("y") ? pos["y"] : null) };
                 }
                 return true;
             }
@@ -308,6 +321,7 @@ namespace Glasswing
 
         [StructLayout(LayoutKind.Sequential)] struct PT { public int x, y; }
         [StructLayout(LayoutKind.Sequential)] struct SZ { public int cx, cy; }
+        [StructLayout(LayoutKind.Sequential)] struct WindowRect { public int Left, Top, Right, Bottom; }
         [StructLayout(LayoutKind.Sequential)] struct DibHeader
         {
             public int Size, Width, Height;
@@ -316,6 +330,8 @@ namespace Glasswing
         }
         [StructLayout(LayoutKind.Sequential, Pack = 1)] struct BLEND { public byte op, flags, alpha, fmt; }
         [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr h, IntPtr dst, ref PT pos, ref SZ size, IntPtr src, ref PT srcPos, int key, ref BLEND b, int flags);
+        [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out WindowRect rect);
+        [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
         [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
         [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr o);
         [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
@@ -326,6 +342,22 @@ namespace Glasswing
 
         IntPtr layerDc, layerBitmap, layerPrevious, layerPixels;
         Size layerSize;
+
+        public Point NativeLocation
+        {
+            get
+            {
+                WindowRect rect;
+                return IsHandleCreated && GetWindowRect(Handle, out rect) ? new Point(rect.Left, rect.Top) : Location;
+            }
+        }
+
+        public void MoveDesktopWindow(Point position)
+        {
+            if (IsHandleCreated)
+                SetWindowPos(Handle, IntPtr.Zero, position.X, position.Y, 0, 0, 0x15);
+            else Location = position;
+        }
 
         void ResetLayer()
         {
@@ -638,8 +670,12 @@ namespace Glasswing
             walkMonitor = monitor?.DeviceName;
         }
         public void StopMode() { if (Mode == 2) HideBall(); Mode = 0; Speed = 0; portalOpened = 0; }
-        public float GroundX() { return Main == null ? 0 : Main.Left + W / 2f; }
-        public Rectangle Area() { return Screen.FromPoint(new Point((int)GroundX(), Main.Top + H - (int)(40 * Scale))).WorkingArea; }
+        public float GroundX() { return Main == null ? 0 : Main.NativeLocation.X + W / 2f; }
+        public Rectangle Area()
+        {
+            var position = Main.NativeLocation;
+            return Screen.FromPoint(new Point(position.X + W / 2, position.Y + H - (int)(40 * Scale))).WorkingArea;
+        }
 
         void StartBall()
         {
@@ -666,7 +702,7 @@ namespace Glasswing
             BallOn = true; grab = false;
             BX = GroundX() + Facing * -140 * u;
             if (BX < area.Left + 40 * u || BX > area.Right - 40 * u) BX = GroundX() + Facing * 140 * u;
-            BY = Main.Top + H * 0.2f; BVX = 0; BVY = 0;
+            BY = Main.NativeLocation.Y + H * 0.2f; BVX = 0; BVY = 0;
             BallWin.Visible = Main.Visible;
         }
         void HideBall()
@@ -685,16 +721,17 @@ namespace Glasswing
             double t = T();
             float dt = (float)Math.Min(0.065, Math.Max(0.001, t - lastStep)); lastStep = t;
             float u = Scale;
-            if (Main.Left != previousWindowLeft) exactGroundX = GroundX();
+            var position = Main.NativeLocation;
+            if (position.X != previousWindowLeft) exactGroundX = position.X + W / 2f;
             float x = exactGroundX;
-            float ground = Main.Top + H - 8 * u;
+            float ground = position.Y + H - 8 * u;
             area = Area();
             float minX = area.Left + 46 * u, maxX = area.Right - 46 * u;
             Point c = Cursor.Position;
 
             if (Mode >= 2 && t > ModeUntil) { if (Mode == 2) HideBall(); Mode = 0; Event = "gameover"; }
             float target = x; bool go = false;
-            int top = Main.Top;
+            int top = position.Y;
             bool impEating = Ch.Id == PetChar.ImpId && t < EatUntil;
             if (impEating) Speed = 0;
             else if (Mode == 1)
@@ -711,7 +748,7 @@ namespace Glasswing
                         if (t - portalOpened < PortalDuration)
                         {
                             Speed = 0;
-                            Main.SetBitmapAt(Render(), Main.Left, top);
+                            Main.SetBitmapAt(Render(), position.X, top);
                             return;
                         }
                         // Start just inside the new screen, including vertical and separated layouts.
@@ -783,9 +820,6 @@ namespace Glasswing
             exactGroundX = x;
             previousWindowLeft = left;
             formLeft = left;
-            var location = new Point(left, top);
-            // UpdateLayeredWindow moves the native window without updating WinForms' cached location.
-            if (Main.Location != location) Main.Location = location;
             Main.SetBitmapAt(Render(), left, top);
             UpdateHouse(t);
 
@@ -817,7 +851,6 @@ namespace Glasswing
                 }
                 int bs = BallWin.Width;
                 var bp = new Point((int)(BX - bs / 2f), (int)(BY - bs / 2f));
-                if (BallWin.Location != bp) BallWin.Location = bp;
                 BallWin.SetBitmapAt(RenderBall(bs, r), bp.X, bp.Y);
             }
         }
@@ -898,7 +931,7 @@ namespace Glasswing
             {
                 g.Clear(Color.Transparent);
                 g.SmoothingMode = SmoothingMode.AntiAlias;
-                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.InterpolationMode = Ch.Id == PetChar.ImpId ? InterpolationMode.Bilinear : InterpolationMode.HighQualityBicubic;
                 g.PixelOffsetMode = PixelOffsetMode.HighQuality;
                 g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                 // на бегу наклоняется вперёд
@@ -1037,7 +1070,7 @@ namespace Glasswing
             }
             float offset = cursor.X - (formLeft + gx);
             bool near = Main != null && t < impTrackUntil
-                && Math.Abs(cursor.Y - (Main.Top + gy - 65 * u)) < 180 * u
+                && Math.Abs(cursor.Y - (Main.NativeLocation.Y + gy - 65 * u)) < 180 * u
                 && Math.Abs(offset) < 270 * u;
             float look = walking ? Facing : near ? Math.Max(-0.72f, Math.Min(0.72f, offset / (150 * u))) : impAttention;
             if (eating || dancing || Sleeping) look = 0;

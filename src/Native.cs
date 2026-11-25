@@ -237,10 +237,10 @@ namespace Glasswing
         // Перетаскивание окна за любое место. Двигаем сами, а не системным циклом переноса
         // (WM_NCLBUTTONDOWN + HTCAPTION): с ним стеклянные окна моргают, пока их тащат.
         // Как и системный цикл, возвращается после отпускания кнопки и само отпускание съедает.
-        public static void DragWindow(Form f)
+        public static void DragWindow(Form f, Point? startLocation = null)
         {
             IntPtr h = f.Handle;
-            Point start = Cursor.Position, origin = f.Location, last = origin;
+            Point start = Cursor.Position, origin = startLocation ?? f.Location, last = origin;
             SetCapture(h);
             SendMessage(h, Ui.WM_ENTERSIZEMOVE, IntPtr.Zero, IntPtr.Zero);
             try

@@ -141,7 +141,7 @@ namespace Glasswing
             var c = new List<KeyValuePair<string, string>>();
             try
             {
-                if (!mod.Aware || hidden || pet.Sleeping || pet.Bubble != null || pet.Mode >= 2 || now < awareNext) return;
+                if (!mod.Aware || hidden || !pet.CanGesture || pet.Bubble != null || now < awareNext) return;
                 string st = GetStage();
                 Action<string, string> add = (k, text) =>
                 {

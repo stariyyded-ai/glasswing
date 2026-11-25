@@ -20,8 +20,7 @@ namespace Glasswing
         public override string Id => "fox";
         public override string Name => "Питомец";
         public override string Short => "Живёт внизу экрана";
-        public override string Description => "Питомец внизу экрана: растёт от малыша до взрослого, играет, болтает и помогает с делами. Персонажа можно выбрать: " +
-            string.Join(", ", PetChar.Available().Select(c => c.Title)) + ".";
+        public override string Description => "Чертёнок Уголёк гуляет между мониторами, живёт в шалаше, играет и помогает с делами.";
         public override IconKind Icon => IconKind.Fox;
         public override bool Running => life != null;
         public override bool CanReset => true;
@@ -268,7 +267,6 @@ namespace Glasswing
     partial class PetLife : IDisposable
     {
         static readonly CultureInfo Ru = CultureInfo.GetCultureInfo("ru-RU");
-        const double TeenXp = 120, AdultXp = 400;          // сколько заботы нужно, чтобы подрасти
 
         public static readonly PetFood[] Foods =
         {
@@ -311,13 +309,13 @@ namespace Glasswing
         readonly PetBody pet = new PetBody();
         readonly PetForm form = new PetForm();
         readonly PetInput input = new PetInput();
-        readonly Timer anim = new Timer { Interval = 33 }, life = new Timer { Interval = 1000 };
+        readonly Timer anim = new Timer { Interval = 16 }, life = new Timer { Interval = 1000 };
         readonly Random rnd = new Random();
         readonly PetState P;
         PetChar ch;
-        DateTime lastTouch = DateTime.Now, lastTalk = DateTime.Now, lastPatXp = DateTime.MinValue, lastFeedXp = DateTime.MinValue,
-                 lastTalkXp = DateTime.MinValue, lastGameXp = DateTime.MinValue;
+        DateTime lastTouch = DateTime.Now, lastTalk = DateTime.Now;
         DateTime nextIdle = DateTime.Now.AddMinutes(4), nextNeed = DateTime.Now.AddMinutes(2), nextWalk = DateTime.Now.AddMinutes(2);
+        DateTime nextSolo = DateTime.Now.AddMinutes(1);
         DateTime? restoreTop;
         double activeMin, away;
         int gameMode;
@@ -372,7 +370,6 @@ namespace Glasswing
             form.Bounds = new Rectangle(pos.X, pos.Y, pet.W, pet.H);
             savedPos = pos;
 
-            form.MouseMove += (s, e) => pet.HoverUntil = pet.T() + 1.6;
             form.MouseDown += OnMouseDown;
             form.MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) { Touch(); BuildMenu().Show(form, e.Location); } };
             form.Shown += (s, e) => { anim.Start(); life.Start(); StartAware(); Greet(); };
@@ -517,14 +514,6 @@ namespace Glasswing
 
         // «три хвоста», «восемь щупалец»
         string Tails(int n) { return (n < Numbers.Length ? Numbers[n] : n.ToString()) + " " + Plural(n, ch.Tail[0], ch.Tail[1], ch.Tail[2]); }
-        int TailCount(string st) { return ch.Id == PetChar.ImpId ? 1 : pet.Art.Stages[st].Tails.Length; }
-
-        string StageName(string st)
-        {
-            if (st == "baby") return F("{малыш|малышка}");
-            if (st == "teen") return "подросток";
-            return ch.AdultName;
-        }
 
         void Say(string text, double sec = 0)
         {
@@ -540,6 +529,7 @@ namespace Glasswing
         {
             lastTouch = DateTime.Now;
             sleepAtShelter = false;
+            pet.ClearActivity();
             if (pet.Sleeping) { pet.Sleeping = false; SayMood("wake"); }
         }
 
@@ -575,47 +565,12 @@ namespace Glasswing
             P.Save();
         }
 
-        string GetStage() { return P.Xp >= AdultXp ? "adult" : P.Xp >= TeenXp ? "teen" : "baby"; }
+        // The imp uses the full set of existing dialogue and assistant skills.
+        string GetStage() { return "adult"; }
 
         static double Clamp(double v) { return Math.Max(0.0, Math.Min(100.0, v)); }
 
-        string DaysTogether()
-        {
-            int d = (int)Math.Floor((DateTime.Now - P.Born).TotalDays) + 1;
-            return d + " " + Plural(d, "день", "дня", "дней") + " вместе";
-        }
-
-        void UpdateInfo()
-        {
-            string st = GetStage();
-            pet.InfoTitle = P.Name + " · " + StageName(st);
-            pet.InfoSub = DaysTogether();
-            pet.Grow = st == "baby" ? P.Xp / TeenXp : st == "teen" ? (P.Xp - TeenXp) / (AdultXp - TeenXp) : 1.0;
-            pet.Mood = P.Mood;
-            pet.Food = P.Food;
-        }
-
-        void AddXp(double v)
-        {
-            string before = GetStage();
-            P.Xp += v;
-            string after = GetStage();
-            if (after == before) return;
-            UpdateInfo();
-            pet.Stage = after;
-            pet.Celebrate();
-            if (after == "teen")
-            {
-                string grew = TailCount("teen") > TailCount("baby") ? "У меня теперь " + Tails(TailCount("teen")) + "." : F("Посмотри, как я {подрос|подросла}!");
-                Say("Смотри! " + grew + F(" И я {научился|научилась} говорить! Напиши мне что-нибудь."), 12);
-            }
-            else
-            {
-                string grew = TailCount("adult") > TailCount("teen") ? Cap(Tails(TailCount("adult"))) + "… " : "Посмотри на меня… ";
-                Say(grew + F("Я {вырос|выросла}! Теперь я могу тебе помогать. Скажи «помощь»."), 14);
-            }
-            SaveState();
-        }
+        void UpdateInfo() { pet.Mood = P.Mood; pet.Food = P.Food; }
 
         void DoPat()
         {
@@ -623,7 +578,6 @@ namespace Glasswing
             P.Mood = Clamp(P.Mood + 7);
             P.Pats++;
             pet.Pat();
-            if ((DateTime.Now - lastPatXp).TotalSeconds > 15) { AddXp(1.5); lastPatXp = DateTime.Now; }
             if (rnd.NextDouble() < 0.45 && pet.Bubble == null) SayMood("pat");
             UpdateInfo();
         }
@@ -637,7 +591,6 @@ namespace Glasswing
             P.Mood = Clamp(P.Mood + (i == Fav ? 15 : fd.Mood));
             P.Fed++;
             pet.Feed(i);
-            if ((DateTime.Now - lastFeedXp).TotalSeconds > 60) { AddXp(4); lastFeedXp = DateTime.Now; }
             string st = GetStage();
             if (i == Fav && st != "baby") Say(st == "teen" ? fd.Short + "! Моё любимое!" : fd.Short + "… ты помнишь, что я люблю.");
             else SayMood("eat");
@@ -673,7 +626,6 @@ namespace Glasswing
             int mode = gameMode;
             gameMode = 0;
             P.Mood = Clamp(P.Mood + 15);
-            if ((DateTime.Now - lastGameXp).TotalMinutes > 3) { AddXp(5); lastGameXp = DateTime.Now; }
             bool baby = GetStage() == "baby";
             if (won)
             {
@@ -696,14 +648,42 @@ namespace Glasswing
         {
             if (ev == "kick")
             {
-                if (rnd.NextDouble() < 0.12 && pet.Bubble == null) Say(GetStage() == "baby" ? F("{S}!") : Pick("Лови!", "Ещё!", "Хоп!", "Ха!"), 1.5);
+                if (gameMode != 0 && rnd.NextDouble() < 0.12 && pet.Bubble == null) Say(Pick("Лови!", "Ещё!", "Хоп!", "Ха!"), 1.5);
             }
-            else if (ev == "gameover") EndGame(false);
+            else if (ev == "gameover")
+            {
+                if (gameMode != 0) EndGame(false);
+                else
+                {
+                    P.Mood = Clamp(P.Mood + 12);
+                    pet.Kicks = 0;
+                    UpdateInfo();
+                    SaveState();
+                }
+            }
             else if (ev == "arrived") SaveState();
             else if (ev == "homebuilt")
             {
                 Settings.Set(mod.Id, "HouseBuilt", true);
                 if (pet.Bubble == null && !sleepAtShelter) Say("Готово! Теперь у меня есть шалаш.");
+            }
+        }
+
+        void ChooseActivity()
+        {
+            if (!pet.CanGesture) return;
+            nextSolo = DateTime.Now.AddMinutes(4 + rnd.Next(4));
+            if (P.Food < 55 || rnd.Next(3) == 0)
+                pet.Forage(rnd.Next(2) == 0);
+            else if (mod.Locked || rnd.Next(3) == 0)
+            {
+                pet.AskForAttention(false);
+                P.Mood = Clamp(P.Mood + 8);
+            }
+            else
+            {
+                gameMode = 0;
+                pet.StartMode(2, 18);
             }
         }
 
@@ -779,7 +759,6 @@ namespace Glasswing
             string l = t.ToLower().Replace('ё', 'е');
             Match m;
             P.Mood = Clamp(P.Mood + 3);
-            if ((DateTime.Now - lastTalkXp).TotalSeconds > 30) { AddXp(2); lastTalkXp = DateTime.Now; }
             // помощник и «что происходит» раньше игр: «играй» и «что играет» похожи на «играть»
             string aw = SkillReply(t, l) ?? AwareReply(l);
             if (aw != null) return aw;
@@ -966,8 +945,9 @@ namespace Glasswing
             play.DropDownItems.Add(new ToolStripSeparator());
             play.DropDownItems.Add(new ToolStripMenuItem("Хватит играть", null, (s, e) => { if (pet.Mode >= 2) { pet.StopMode(); EndGame(false); } }));
             menu.Items.Add(play);
+            menu.Items.Add(new ToolStripMenuItem("Займись чем-нибудь", null, (s, e) => ChooseActivity())
+                { Enabled = pet.CanGesture });
             menu.Items.Add(new ToolStripMenuItem("Поговорить…", null, (s, e) => ShowInput("chat")));
-            menu.Items.Add(new ToolStripMenuItem(F("Как {он|она}?"), null, (s, e) => HowIsIt()));
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("Дать имя…", null, (s, e) => ShowInput("name")));
             var screens = Screen.AllScreens.Where(screen => screen.WorkingArea != pet.Area()).ToArray();
@@ -1009,18 +989,6 @@ namespace Glasswing
             return menu;
         }
 
-        void HowIsIt()
-        {
-            Touch();
-            string st = GetStage();
-            string food = P.Food < 25 ? F("очень {голоден|голодна}") : P.Food < 55 ? "не против перекусить" : F("{сыт|сыта}");
-            string mood = P.Mood < 25 ? "скучает" : P.Mood < 60 ? F("{спокоен|спокойна}") : F("{счастлив|счастлива}");
-            string next = st == "baby" ? "До подросткового возраста: " + (int)(100 * P.Xp / TeenXp) + "%." :
-                          st == "teen" ? "До взрослого возраста: " + (int)(100 * (P.Xp - TeenXp) / (AdultXp - TeenXp)) + "%." :
-                          F("{Он уже взрослый|Она уже взрослая}") + (TailCount("adult") > 1 ? F(", у {него|неё} ") + Tails(TailCount("adult")) : "") + ".";
-            Say(P.Name + ", " + StageName(st) + ", " + DaysTogether() + ".\n" + F("Сейчас {он|она} ") + food + " и " + mood + ".\n" + next, 9);
-        }
-
         // ---------------------------------------------------------------- жизнь: раз в секунду
 
         void LifeTick()
@@ -1031,8 +999,16 @@ namespace Glasswing
             double k = pet.Sleeping ? 0.4 : 1.0;
             P.Food = Clamp(P.Food - 0.11 * min * k);
             P.Mood = Clamp(P.Mood - (0.09 + (P.Food < 30 ? 0.08 : 0)) * min * k);
-            // растёт, пока вы вместе и о нём заботятся
-            if (P.Food > 30 && P.Mood > 30) AddXp(0.1 * min);
+            int gathered = hidden || pet.Sleeping ? -1 : pet.TakeForageResult();
+            if (gathered >= 0)
+            {
+                var food = Foods[gathered];
+                P.Food = Clamp(P.Food + food.Food);
+                P.Mood = Clamp(P.Mood + food.Mood);
+                P.Fed++;
+                pet.Feed(gathered);
+                SaveState();
+            }
 
             double idle = PetIdle.Seconds();
             if (idle < 300) activeMin += min; else activeMin = 0;
@@ -1080,19 +1056,21 @@ namespace Glasswing
                     activeMin = 0;
                     Say(Pick("Ты уже полтора часа за компьютером. Встань, потянись и попей воды!", "Пора сделать перерыв: разомни спину и дай глазам отдохнуть."), 15);
                 }
-                else if (now > nextNeed && (P.Food < 30 || P.Mood < 30))
+                else if (idle < 60 && now > nextNeed && pet.CanGesture && (P.Food < 30 || P.Mood < 45))
                 {
                     nextNeed = now.AddMinutes(15 + rnd.Next(10));
-                    SayMood(P.Food < 30 ? "hungry" : "bored");
+                    pet.AskForAttention(P.Food < 30);
                 }
-                else if (now > nextIdle && idle < 60)
+                else if (now > nextSolo && idle < 300 && pet.CanGesture && !sleepAtShelter)
+                    ChooseActivity();
+                else if (now > nextIdle && idle < 60 && pet.CanGesture)
                 {
                     nextIdle = now.AddMinutes(14 + rnd.Next(18));
                     SayMood("idle");
                 }
             }
             // сам гуляет по экрану, когда ему хорошо
-            if (mod.Walk && !mod.Locked && !hidden && pet.Mode == 0 && !pet.Sleeping && pet.Bubble == null && P.Mood > 35 && now > nextWalk)
+            if (mod.Walk && !mod.Locked && !hidden && pet.CanGesture && P.Mood > 35 && now > nextWalk)
             {
                 nextWalk = now.AddSeconds(50 + rnd.Next(110));
                 if (!pet.HasHouse && !pet.AtHome() && pet.WalkHome()) return;

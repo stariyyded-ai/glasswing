@@ -20,8 +20,7 @@ namespace Glasswing
         public override string Id => "fox";
         public override string Name => "Питомец";
         public override string Short => "Живёт внизу экрана";
-        public override string Description => "Питомец внизу экрана: растёт от малыша до взрослого, играет, болтает и помогает с делами. Персонажа можно выбрать: " +
-            string.Join(", ", PetChar.Available().Select(c => c.Title)) + ".";
+        public override string Description => "Чертёнок Уголёк гуляет между мониторами, живёт в шалаше, играет и помогает с делами.";
         public override IconKind Icon => IconKind.Fox;
         public override bool Running => life != null;
         public override bool CanReset => true;
@@ -268,7 +267,6 @@ namespace Glasswing
     partial class PetLife : IDisposable
     {
         static readonly CultureInfo Ru = CultureInfo.GetCultureInfo("ru-RU");
-        const double TeenXp = 120, AdultXp = 400;          // сколько заботы нужно, чтобы подрасти
 
         public static readonly PetFood[] Foods =
         {
@@ -311,19 +309,22 @@ namespace Glasswing
         readonly PetBody pet = new PetBody();
         readonly PetForm form = new PetForm();
         readonly PetInput input = new PetInput();
-        readonly Timer anim = new Timer { Interval = 33 }, life = new Timer { Interval = 1000 };
+        readonly PetFrameClock anim;
+        readonly Timer life = new Timer { Interval = 1000 };
+        bool draggingPet;
         readonly Random rnd = new Random();
         readonly PetState P;
         PetChar ch;
-        DateTime lastTouch = DateTime.Now, lastTalk = DateTime.Now, lastPatXp = DateTime.MinValue, lastFeedXp = DateTime.MinValue,
-                 lastTalkXp = DateTime.MinValue, lastGameXp = DateTime.MinValue;
+        DateTime lastTouch = DateTime.Now, lastTalk = DateTime.Now;
         DateTime nextIdle = DateTime.Now.AddMinutes(4), nextNeed = DateTime.Now.AddMinutes(2), nextWalk = DateTime.Now.AddMinutes(2);
+        DateTime nextSolo = DateTime.Now.AddMinutes(1);
         DateTime? restoreTop;
         double activeMin, away;
         int gameMode;
         float? homeX;
         bool hidden;
         Point savedPos;
+        bool sleepAtShelter;
 
         static int S(double v) { return Ui.S(v); }
 
@@ -355,6 +356,8 @@ namespace Glasswing
             pet.H = S(400);
             pet.Stage = GetStage();
             pet.Main = form;
+            pet.WeatherBounds = () => Mod<WeatherModule>()?.VisibleBounds;
+            pet.RestoreHouse(Settings.GetBool(m.Id, "HouseBuilt", false));
             UpdateInfo();
 
             form.Text = App.Name + ": " + m.Name;
@@ -369,20 +372,19 @@ namespace Glasswing
             form.Bounds = new Rectangle(pos.X, pos.Y, pet.W, pet.H);
             savedPos = pos;
 
-            form.MouseMove += (s, e) => pet.HoverUntil = pet.T() + 1.6;
             form.MouseDown += OnMouseDown;
             form.MouseUp += (s, e) => { if (e.Button == MouseButtons.Right) { Touch(); BuildMenu().Show(form, e.Location); } };
             form.Shown += (s, e) => { anim.Start(); life.Start(); StartAware(); Greet(); };
             input.Submit += OnInput;
 
-            anim.Tick += (s, e) =>
+            anim = new PetFrameClock(form, () =>
             {
-                if (hidden) return;
+                if (hidden || draggingPet) return;
                 try { pet.Animate(); }
                 catch (Exception ex) { Log.Write("питомец, кадр: " + ex.Message); }
                 string ev = pet.Event;
                 if (ev != null) { pet.Event = null; OnPetEvent(ev); }
-            };
+            });
             life.Tick += (s, e) =>
             {
                 try { LifeTick(); }
@@ -404,6 +406,7 @@ namespace Glasswing
             if (hide) input.Hide();
             form.Visible = !hide;
             pet.SyncBall();
+            pet.SyncHouse();
         }
 
         public void ApplyTopMost() { if (restoreTop == null) form.TopMost = mod.TopMost; }
@@ -412,7 +415,7 @@ namespace Glasswing
         {
             pet.StopMode();
             homeX = null;
-            form.Location = DefaultPos();
+            form.MoveDesktopWindow(DefaultPos());
             SaveState();
         }
 
@@ -435,11 +438,11 @@ namespace Glasswing
 
         public void Dispose()
         {
-            anim.Stop(); life.Stop();
+            anim.Dispose(); life.Stop();
             StopAware();
             pet.StopMode();
             SaveState();
-            anim.Dispose(); life.Dispose();
+            life.Dispose();
             input.Dispose();
             form.Close();
             form.Dispose();
@@ -513,14 +516,6 @@ namespace Glasswing
 
         // «три хвоста», «восемь щупалец»
         string Tails(int n) { return (n < Numbers.Length ? Numbers[n] : n.ToString()) + " " + Plural(n, ch.Tail[0], ch.Tail[1], ch.Tail[2]); }
-        int TailCount(string st) { return ch.Id == PetChar.ImpId ? 1 : pet.Art.Stages[st].Tails.Length; }
-
-        string StageName(string st)
-        {
-            if (st == "baby") return F("{малыш|малышка}");
-            if (st == "teen") return "подросток";
-            return ch.AdultName;
-        }
 
         void Say(string text, double sec = 0)
         {
@@ -535,6 +530,8 @@ namespace Glasswing
         void Touch()
         {
             lastTouch = DateTime.Now;
+            sleepAtShelter = false;
+            pet.ClearActivity();
             if (pet.Sleeping) { pet.Sleeping = false; SayMood("wake"); }
         }
 
@@ -559,7 +556,7 @@ namespace Glasswing
             P.Last = DateTime.Now;
             if (!form.IsDisposed)
             {
-                var pos = form.Location;
+                var pos = form.NativeLocation;
                 if (pos != savedPos)
                 {
                     savedPos = pos;
@@ -570,47 +567,12 @@ namespace Glasswing
             P.Save();
         }
 
-        string GetStage() { return P.Xp >= AdultXp ? "adult" : P.Xp >= TeenXp ? "teen" : "baby"; }
+        // The imp uses the full set of existing dialogue and assistant skills.
+        string GetStage() { return "adult"; }
 
         static double Clamp(double v) { return Math.Max(0.0, Math.Min(100.0, v)); }
 
-        string DaysTogether()
-        {
-            int d = (int)Math.Floor((DateTime.Now - P.Born).TotalDays) + 1;
-            return d + " " + Plural(d, "день", "дня", "дней") + " вместе";
-        }
-
-        void UpdateInfo()
-        {
-            string st = GetStage();
-            pet.InfoTitle = P.Name + " · " + StageName(st);
-            pet.InfoSub = DaysTogether();
-            pet.Grow = st == "baby" ? P.Xp / TeenXp : st == "teen" ? (P.Xp - TeenXp) / (AdultXp - TeenXp) : 1.0;
-            pet.Mood = P.Mood;
-            pet.Food = P.Food;
-        }
-
-        void AddXp(double v)
-        {
-            string before = GetStage();
-            P.Xp += v;
-            string after = GetStage();
-            if (after == before) return;
-            UpdateInfo();
-            pet.Stage = after;
-            pet.Celebrate();
-            if (after == "teen")
-            {
-                string grew = TailCount("teen") > TailCount("baby") ? "У меня теперь " + Tails(TailCount("teen")) + "." : F("Посмотри, как я {подрос|подросла}!");
-                Say("Смотри! " + grew + F(" И я {научился|научилась} говорить! Напиши мне что-нибудь."), 12);
-            }
-            else
-            {
-                string grew = TailCount("adult") > TailCount("teen") ? Cap(Tails(TailCount("adult"))) + "… " : "Посмотри на меня… ";
-                Say(grew + F("Я {вырос|выросла}! Теперь я могу тебе помогать. Скажи «помощь»."), 14);
-            }
-            SaveState();
-        }
+        void UpdateInfo() { pet.Mood = P.Mood; pet.Food = P.Food; }
 
         void DoPat()
         {
@@ -618,7 +580,6 @@ namespace Glasswing
             P.Mood = Clamp(P.Mood + 7);
             P.Pats++;
             pet.Pat();
-            if ((DateTime.Now - lastPatXp).TotalSeconds > 15) { AddXp(1.5); lastPatXp = DateTime.Now; }
             if (rnd.NextDouble() < 0.45 && pet.Bubble == null) SayMood("pat");
             UpdateInfo();
         }
@@ -632,7 +593,6 @@ namespace Glasswing
             P.Mood = Clamp(P.Mood + (i == Fav ? 15 : fd.Mood));
             P.Fed++;
             pet.Feed(i);
-            if ((DateTime.Now - lastFeedXp).TotalSeconds > 60) { AddXp(4); lastFeedXp = DateTime.Now; }
             string st = GetStage();
             if (i == Fav && st != "baby") Say(st == "teen" ? fd.Short + "! Моё любимое!" : fd.Short + "… ты помнишь, что я люблю.");
             else SayMood("eat");
@@ -668,7 +628,6 @@ namespace Glasswing
             int mode = gameMode;
             gameMode = 0;
             P.Mood = Clamp(P.Mood + 15);
-            if ((DateTime.Now - lastGameXp).TotalMinutes > 3) { AddXp(5); lastGameXp = DateTime.Now; }
             bool baby = GetStage() == "baby";
             if (won)
             {
@@ -691,10 +650,43 @@ namespace Glasswing
         {
             if (ev == "kick")
             {
-                if (rnd.NextDouble() < 0.12 && pet.Bubble == null) Say(GetStage() == "baby" ? F("{S}!") : Pick("Лови!", "Ещё!", "Хоп!", "Ха!"), 1.5);
+                if (gameMode != 0 && rnd.NextDouble() < 0.12 && pet.Bubble == null) Say(Pick("Лови!", "Ещё!", "Хоп!", "Ха!"), 1.5);
             }
-            else if (ev == "gameover") EndGame(false);
+            else if (ev == "gameover")
+            {
+                if (gameMode != 0) EndGame(false);
+                else
+                {
+                    P.Mood = Clamp(P.Mood + 12);
+                    pet.Kicks = 0;
+                    UpdateInfo();
+                    SaveState();
+                }
+            }
             else if (ev == "arrived") SaveState();
+            else if (ev == "homebuilt")
+            {
+                Settings.Set(mod.Id, "HouseBuilt", true);
+                if (pet.Bubble == null && !sleepAtShelter) Say("Готово! Теперь у меня есть шалаш.");
+            }
+        }
+
+        void ChooseActivity()
+        {
+            if (!pet.CanGesture) return;
+            nextSolo = DateTime.Now.AddMinutes(4 + rnd.Next(4));
+            if (P.Food < 55 || rnd.Next(3) == 0)
+                pet.Forage(rnd.Next(2) == 0);
+            else if (mod.Locked || rnd.Next(3) == 0)
+            {
+                pet.AskForAttention(false);
+                P.Mood = Clamp(P.Mood + 8);
+            }
+            else
+            {
+                gameMode = 0;
+                pet.StartMode(2, 18);
+            }
         }
 
         // ---------------------------------------------------------------- разговор
@@ -769,7 +761,6 @@ namespace Glasswing
             string l = t.ToLower().Replace('ё', 'е');
             Match m;
             P.Mood = Clamp(P.Mood + 3);
-            if ((DateTime.Now - lastTalkXp).TotalSeconds > 30) { AddXp(2); lastTalkXp = DateTime.Now; }
             // помощник и «что происходит» раньше игр: «играй» и «что играет» похожи на «играть»
             string aw = SkillReply(t, l) ?? AwareReply(l);
             if (aw != null) return aw;
@@ -905,9 +896,11 @@ namespace Glasswing
         {
             input.Mode = mode;
             var wa = Screen.FromControl(form).WorkingArea;
-            int x = form.Left + (form.Width - input.Width) / 2;
-            int y = form.Bottom + S(4);
-            if (y + input.Height > wa.Bottom) y = form.Bottom - input.Height - S(2);
+            var position = form.NativeLocation;
+            int x = position.X + (pet.W - input.Width) / 2;
+            int bottom = position.Y + pet.H;
+            int y = bottom + S(4);
+            if (y + input.Height > wa.Bottom) y = bottom - input.Height - S(2);
             input.Location = new Point(Math.Max(wa.Left, Math.Min(wa.Right - input.Width, x)), y);
             input.Box.Text = mode == "name" ? P.Name : "";
             input.Show();
@@ -930,9 +923,11 @@ namespace Glasswing
             if (pet.Mode == 1) pet.StopMode();
             if (!mod.Locked)
             {
-                var before = form.Location;
-                WNative.DragWindow(form);
-                if (form.Location != before) { SaveState(); return; }
+                var before = form.NativeLocation;
+                draggingPet = true;
+                try { WNative.DragWindow(form, before); }
+                finally { draggingPet = false; }
+                if (form.NativeLocation != before) { SaveState(); return; }
             }
             DoPat();
         }
@@ -956,10 +951,41 @@ namespace Glasswing
             play.DropDownItems.Add(new ToolStripSeparator());
             play.DropDownItems.Add(new ToolStripMenuItem("Хватит играть", null, (s, e) => { if (pet.Mode >= 2) { pet.StopMode(); EndGame(false); } }));
             menu.Items.Add(play);
+            menu.Items.Add(new ToolStripMenuItem("Займись чем-нибудь", null, (s, e) => ChooseActivity())
+                { Enabled = pet.CanGesture });
             menu.Items.Add(new ToolStripMenuItem("Поговорить…", null, (s, e) => ShowInput("chat")));
-            menu.Items.Add(new ToolStripMenuItem(F("Как {он|она}?"), null, (s, e) => HowIsIt()));
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("Дать имя…", null, (s, e) => ShowInput("name")));
+            var screens = Screen.AllScreens.Where(screen => screen.WorkingArea != pet.Area()).ToArray();
+            if (pet.HomeScreen() != null)
+            {
+                menu.Items.Add(new ToolStripMenuItem("Отправить в шалаш", null, (s, e) =>
+                {
+                    pet.StopMode();
+                    pet.WalkHome();
+                }) { Enabled = !mod.Locked });
+                menu.Items.Add(new ToolStripMenuItem("Уложить спать в шалаше", null, (s, e) =>
+                {
+                    pet.StopMode();
+                    sleepAtShelter = pet.WalkHome();
+                }) { Enabled = !mod.Locked });
+            }
+            if (screens.Length > 0)
+            {
+                var portals = new ToolStripMenuItem("Портал на другой монитор") { Enabled = !mod.Locked };
+                foreach (var screen in screens)
+                {
+                    var destination = screen.WorkingArea;
+                    var number = Regex.Match(screen.DeviceName, @"\d+$").Value;
+                    string label = screen.Primary ? "Основной монитор" : "Монитор " + (number.Length > 0 ? number : screen.DeviceName);
+                    portals.DropDownItems.Add(new ToolStripMenuItem(label, null, (s, e) =>
+                    {
+                        pet.StopMode();
+                        pet.WalkTo(destination.Left + destination.Width / 2f, 350, screen);
+                    }));
+                }
+                menu.Items.Add(portals);
+            }
             menu.Items.Add(new ToolStripMenuItem("Поверх всех окон", null, (s, e) => mod.TopMost = !mod.TopMost) { Checked = mod.TopMost });
             menu.Items.Add(new ToolStripMenuItem("Закрепить на месте", null, (s, e) => mod.Locked = !mod.Locked) { Checked = mod.Locked });
             menu.Items.Add(new ToolStripMenuItem("Гулять по всем мониторам", null, (s, e) => mod.Walk = !mod.Walk) { Checked = mod.Walk });
@@ -967,18 +993,6 @@ namespace Glasswing
             menu.Items.Add(new ToolStripMenuItem("Центр управления " + App.Name, null, (s, e) => App.Core.ShowCenter(mod)));
             menu.Items.Add(new ToolStripMenuItem("Убрать «" + mod.Name + "»", null, (s, e) => App.Core.SetEnabled(mod, false)));
             return menu;
-        }
-
-        void HowIsIt()
-        {
-            Touch();
-            string st = GetStage();
-            string food = P.Food < 25 ? F("очень {голоден|голодна}") : P.Food < 55 ? "не против перекусить" : F("{сыт|сыта}");
-            string mood = P.Mood < 25 ? "скучает" : P.Mood < 60 ? F("{спокоен|спокойна}") : F("{счастлив|счастлива}");
-            string next = st == "baby" ? "До подросткового возраста: " + (int)(100 * P.Xp / TeenXp) + "%." :
-                          st == "teen" ? "До взрослого возраста: " + (int)(100 * (P.Xp - TeenXp) / (AdultXp - TeenXp)) + "%." :
-                          F("{Он уже взрослый|Она уже взрослая}") + (TailCount("adult") > 1 ? F(", у {него|неё} ") + Tails(TailCount("adult")) : "") + ".";
-            Say(P.Name + ", " + StageName(st) + ", " + DaysTogether() + ".\n" + F("Сейчас {он|она} ") + food + " и " + mood + ".\n" + next, 9);
         }
 
         // ---------------------------------------------------------------- жизнь: раз в секунду
@@ -991,19 +1005,33 @@ namespace Glasswing
             double k = pet.Sleeping ? 0.4 : 1.0;
             P.Food = Clamp(P.Food - 0.11 * min * k);
             P.Mood = Clamp(P.Mood - (0.09 + (P.Food < 30 ? 0.08 : 0)) * min * k);
-            // растёт, пока вы вместе и о нём заботятся
-            if (P.Food > 30 && P.Mood > 30) AddXp(0.1 * min);
+            int gathered = hidden || pet.Sleeping ? -1 : pet.TakeForageResult();
+            if (gathered >= 0)
+            {
+                var food = Foods[gathered];
+                P.Food = Clamp(P.Food + food.Food);
+                P.Mood = Clamp(P.Mood + food.Mood);
+                P.Fed++;
+                pet.Feed(gathered);
+                SaveState();
+            }
 
             double idle = PetIdle.Seconds();
             if (idle < 300) activeMin += min; else activeMin = 0;
+            if (sleepAtShelter && pet.HomeScreen() == null) sleepAtShelter = false;
 
             // ночью засыпает, если его не трогают
-            if (!pet.Sleeping && idle >= (night ? 120 : 900) && (now - lastTouch).TotalMinutes > 1)
+            if (!hidden && !pet.Sleeping && (sleepAtShelter ||
+                (idle >= (night ? 120 : 900) && (now - lastTouch).TotalMinutes > 1)))
             {
-                pet.StopMode();
-                pet.Sleeping = true;
+                if ((sleepAtShelter || mod.Walk) && !mod.Locked && pet.HomeScreen() != null && !pet.AtHome())
+                {
+                    if (pet.Mode == 0) pet.WalkHome();
+                }
+                else if (pet.Mode == 0 && (pet.HomeScreen() == null || mod.Locked || !mod.Walk || pet.HasHouse))
+                    pet.Sleeping = true;
             }
-            if (pet.Sleeping && idle < 5 && (now - lastTouch).TotalMinutes > 1) pet.Sleeping = false;
+            if (pet.Sleeping && !sleepAtShelter && idle < 5 && (now - lastTouch).TotalMinutes > 1) pet.Sleeping = false;
             var music = mod.Aware ? Mod<NowPlayingModule>()?.Current : null;
             pet.MusicPlaying = music != null && music.Has && music.Playing && idle < 900;
 
@@ -1034,21 +1062,24 @@ namespace Glasswing
                     activeMin = 0;
                     Say(Pick("Ты уже полтора часа за компьютером. Встань, потянись и попей воды!", "Пора сделать перерыв: разомни спину и дай глазам отдохнуть."), 15);
                 }
-                else if (now > nextNeed && (P.Food < 30 || P.Mood < 30))
+                else if (idle < 60 && now > nextNeed && pet.CanGesture && (P.Food < 30 || P.Mood < 45))
                 {
                     nextNeed = now.AddMinutes(15 + rnd.Next(10));
-                    SayMood(P.Food < 30 ? "hungry" : "bored");
+                    pet.AskForAttention(P.Food < 30);
                 }
-                else if (now > nextIdle && idle < 60)
+                else if (now > nextSolo && idle < 300 && pet.CanGesture && !sleepAtShelter)
+                    ChooseActivity();
+                else if (now > nextIdle && idle < 60 && pet.CanGesture)
                 {
                     nextIdle = now.AddMinutes(14 + rnd.Next(18));
                     SayMood("idle");
                 }
             }
             // сам гуляет по экрану, когда ему хорошо
-            if (mod.Walk && !mod.Locked && !hidden && pet.Mode == 0 && !pet.Sleeping && pet.Bubble == null && P.Mood > 35 && now > nextWalk)
+            if (mod.Walk && !mod.Locked && !hidden && pet.CanGesture && P.Mood > 35 && now > nextWalk)
             {
                 nextWalk = now.AddSeconds(50 + rnd.Next(110));
+                if (!pet.HasHouse && !pet.AtHome() && pet.WalkHome()) return;
                 var a = pet.Area();
                 float x = pet.GroundX();
                 var otherScreens = Screen.AllScreens.Where(s => s.WorkingArea != a).ToArray();

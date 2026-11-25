@@ -20,7 +20,11 @@ namespace Glasswing
     class PetChar
     {
         public const string ImpId = "imp";
-        public static readonly string[] ImpPoses = { "idle", "walk", "dance", "sleep" };
+        public static readonly string[] ImpPoses =
+        {
+            "front", "blink", "quarter", "profile", "step1", "step2", "step3", "step4",
+            "dance", "sleep", "eat_hold", "eat_bite", "eat_chew"
+        };
         public string Id, Title, DefName, About;
         public bool Female;
         public string Sound, Sound2;             // «кон», «мяф»: голос малыша
@@ -248,7 +252,20 @@ namespace Glasswing
                 if (s == null || pos == null) return false;
                 using (var b = new Bitmap(s))
                 {
-                    Parts[key] = new PetPart { Img = new Bitmap(b), X = Num(pos.ContainsKey("x") ? pos["x"] : null), Y = Num(pos.ContainsKey("y") ? pos["y"] : null) };
+                    Bitmap image;
+                    float ratio = Math.Min(300 * Ui.Scale / b.Width, 260 * Ui.Scale / b.Height);
+                    if (Char.Id == PetChar.ImpId && ratio < 1)
+                    {
+                        image = new Bitmap(Math.Max(1, (int)Math.Round(b.Width * ratio)),
+                            Math.Max(1, (int)Math.Round(b.Height * ratio)), PixelFormat.Format32bppPArgb);
+                        using (var g = Graphics.FromImage(image))
+                        {
+                            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                            g.DrawImage(b, new Rectangle(Point.Empty, image.Size));
+                        }
+                    }
+                    else image = new Bitmap(b);
+                    Parts[key] = new PetPart { Img = image, X = Num(pos.ContainsKey("x") ? pos["x"] : null), Y = Num(pos.ContainsKey("y") ? pos["y"] : null) };
                 }
                 return true;
             }
@@ -304,44 +321,108 @@ namespace Glasswing
 
         [StructLayout(LayoutKind.Sequential)] struct PT { public int x, y; }
         [StructLayout(LayoutKind.Sequential)] struct SZ { public int cx, cy; }
+        [StructLayout(LayoutKind.Sequential)] struct WindowRect { public int Left, Top, Right, Bottom; }
+        [StructLayout(LayoutKind.Sequential)] struct DibHeader
+        {
+            public int Size, Width, Height;
+            public ushort Planes, BitsPerPixel;
+            public int Compression, ImageSize, XResolution, YResolution, ColorsUsed, ImportantColors;
+        }
         [StructLayout(LayoutKind.Sequential, Pack = 1)] struct BLEND { public byte op, flags, alpha, fmt; }
         [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr h, IntPtr dst, ref PT pos, ref SZ size, IntPtr src, ref PT srcPos, int key, ref BLEND b, int flags);
-        [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr h);
-        [DllImport("user32.dll")] static extern int ReleaseDC(IntPtr h, IntPtr dc);
+        [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out WindowRect rect);
+        [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
         [DllImport("gdi32.dll")] static extern IntPtr CreateCompatibleDC(IntPtr dc);
         [DllImport("gdi32.dll")] static extern IntPtr SelectObject(IntPtr dc, IntPtr o);
         [DllImport("gdi32.dll")] static extern bool DeleteDC(IntPtr dc);
         [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr o);
+        [DllImport("gdi32.dll")] static extern IntPtr CreateDIBSection(IntPtr dc, ref DibHeader header, uint usage,
+            out IntPtr pixels, IntPtr section, uint offset);
+        [DllImport("kernel32.dll", EntryPoint = "RtlMoveMemory")] static extern void CopyPixels(IntPtr dest, IntPtr source, UIntPtr bytes);
+
+        IntPtr layerDc, layerBitmap, layerPrevious, layerPixels;
+        Size layerSize;
+
+        public Point NativeLocation
+        {
+            get
+            {
+                WindowRect rect;
+                return IsHandleCreated && GetWindowRect(Handle, out rect) ? new Point(rect.Left, rect.Top) : Location;
+            }
+        }
+
+        public void MoveDesktopWindow(Point position)
+        {
+            if (IsHandleCreated)
+                SetWindowPos(Handle, IntPtr.Zero, position.X, position.Y, 0, 0, 0x15);
+            else Location = position;
+        }
+
+        void ResetLayer()
+        {
+            if (layerPrevious != IntPtr.Zero && layerPrevious != new IntPtr(-1)) SelectObject(layerDc, layerPrevious);
+            if (layerBitmap != IntPtr.Zero) DeleteObject(layerBitmap);
+            if (layerDc != IntPtr.Zero) DeleteDC(layerDc);
+            layerDc = layerBitmap = layerPrevious = layerPixels = IntPtr.Zero;
+            layerSize = Size.Empty;
+        }
+
+        bool PrepareLayer(Size size)
+        {
+            if (layerSize == size) return true;
+            ResetLayer();
+            var header = new DibHeader
+            {
+                Size = Marshal.SizeOf(typeof(DibHeader)), Width = size.Width, Height = -size.Height,
+                Planes = 1, BitsPerPixel = 32
+            };
+            layerDc = CreateCompatibleDC(IntPtr.Zero);
+            if (layerDc != IntPtr.Zero)
+                layerBitmap = CreateDIBSection(layerDc, ref header, 0, out layerPixels, IntPtr.Zero, 0);
+            if (layerBitmap != IntPtr.Zero) layerPrevious = SelectObject(layerDc, layerBitmap);
+            if (layerPixels == IntPtr.Zero || layerPrevious == IntPtr.Zero || layerPrevious == new IntPtr(-1))
+            {
+                ResetLayer();
+                return false;
+            }
+            layerSize = size;
+            return true;
+        }
 
         public void SetBitmapAt(Bitmap bmp, int x, int y)
         {
-            if (!IsHandleCreated) return;
-            IntPtr screen = GetDC(IntPtr.Zero);
-            IntPtr mem = CreateCompatibleDC(screen);
-            IntPtr hb = bmp.GetHbitmap(Color.FromArgb(0));
-            IntPtr old = SelectObject(mem, hb);
+            if (!IsHandleCreated || !PrepareLayer(bmp.Size)) return;
+            int rowBytes = bmp.Width * 4;
+            var data = bmp.LockBits(new Rectangle(Point.Empty, bmp.Size), ImageLockMode.ReadOnly, PixelFormat.Format32bppPArgb);
             try
             {
-                var pos = new PT { x = x, y = y };
-                var sz = new SZ { cx = bmp.Width, cy = bmp.Height };
-                var src = new PT();
-                var b = new BLEND { op = 0, flags = 0, alpha = 255, fmt = 1 };
-                UpdateLayeredWindow(Handle, screen, ref pos, ref sz, mem, ref src, 0, ref b, 2);
+                if (data.Stride == rowBytes)
+                    CopyPixels(layerPixels, data.Scan0, new UIntPtr((uint)(rowBytes * bmp.Height)));
+                else
+                    for (int row = 0; row < bmp.Height; row++)
+                        CopyPixels(IntPtr.Add(layerPixels, row * rowBytes), IntPtr.Add(data.Scan0, row * data.Stride),
+                            new UIntPtr((uint)rowBytes));
             }
-            finally
-            {
-                SelectObject(mem, old);
-                DeleteObject(hb);
-                DeleteDC(mem);
-                ReleaseDC(IntPtr.Zero, screen);
-            }
+            finally { bmp.UnlockBits(data); }
+            var pos = new PT { x = x, y = y };
+            var sz = new SZ { cx = bmp.Width, cy = bmp.Height };
+            var src = new PT();
+            var b = new BLEND { alpha = 255, fmt = 1 };
+            UpdateLayeredWindow(Handle, IntPtr.Zero, ref pos, ref sz, layerDc, ref src, 0, ref b, 2);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            ResetLayer();
+            base.Dispose(disposing);
         }
     }
 
     class Particle { public int Kind; public float X, Y, VX, VY, Size, Spin; public double Born, Life; }
 
     // Рисует питомца кадр за кадром: хвосты покачиваются, он дышит, моргает, смотрит на курсор.
-    class PetBody : IDisposable
+    partial class PetBody : IDisposable
     {
         readonly List<Particle> ps = new List<Particle>();
         readonly Random rnd = new Random();
@@ -355,14 +436,14 @@ namespace Glasswing
         public string Stage = "baby";
         public double Mood = 80, Food = 80;
         public bool Sleeping;
-        public double HoverUntil, HappyUntil, EatUntil, HopStart = -10, TalkUntil;
+        public double HappyUntil, EatUntil, HopStart = -10, TalkUntil;
         public int FoodKind;
         public string Bubble;
         public double BubbleUntil;
-        public string InfoTitle = "", InfoSub = "";
-        public double Grow;
         public Rectangle BubbleRect;
         int formLeft;
+        int previousWindowLeft = int.MinValue;
+        float exactGroundX;
 
         // Движение и игры
         public int Mode;                 // 0 сидит, 1 идёт к TargetX, 2 мячик, 3 бежит за курсором, 4 убегает от курсора
@@ -377,6 +458,12 @@ namespace Glasswing
         bool grab;
         float gdx, gdy;
         double runPhase, lastStep, nextKick, nextJump;
+        float impTurn, impAttention;
+        double nextLook, impTrackUntil;
+        Point impLastCursor;
+        string impPose, impPreviousPose;
+        float impPoseFacing = 1, impPreviousFacing = 1;
+        double impPoseSince;
         Rectangle area;
         Bitmap ballFrame;
         readonly Matrix baseM = new Matrix();
@@ -582,9 +669,13 @@ namespace Glasswing
             Mode = 1; TargetX = x; MaxSpeed = speed; ModeUntil = T() + 30;
             walkMonitor = monitor?.DeviceName;
         }
-        public void StopMode() { if (Mode == 2) HideBall(); Mode = 0; Speed = 0; }
-        public float GroundX() { return Main == null ? 0 : Main.Left + W / 2f; }
-        public Rectangle Area() { return Screen.FromPoint(new Point((int)GroundX(), Main.Top + H - (int)(40 * Scale))).WorkingArea; }
+        public void StopMode() { if (Mode == 2) HideBall(); Mode = 0; Speed = 0; portalOpened = 0; }
+        public float GroundX() { return Main == null ? 0 : Main.NativeLocation.X + W / 2f; }
+        public Rectangle Area()
+        {
+            var position = Main.NativeLocation;
+            return Screen.FromPoint(new Point(position.X + W / 2, position.Y + H - (int)(40 * Scale))).WorkingArea;
+        }
 
         void StartBall()
         {
@@ -611,7 +702,7 @@ namespace Glasswing
             BallOn = true; grab = false;
             BX = GroundX() + Facing * -140 * u;
             if (BX < area.Left + 40 * u || BX > area.Right - 40 * u) BX = GroundX() + Facing * 140 * u;
-            BY = Main.Top + H * 0.2f; BVX = 0; BVY = 0;
+            BY = Main.NativeLocation.Y + H * 0.2f; BVX = 0; BVY = 0;
             BallWin.Visible = Main.Visible;
         }
         void HideBall()
@@ -623,23 +714,27 @@ namespace Glasswing
         // Спрятать или показать мячик вместе с питомцем.
         public void SyncBall() { if (BallWin != null) BallWin.Visible = BallOn && Main.Visible; }
 
-        // Один шаг жизни: движение, мячик, отрисовка обоих окон. Зовётся таймером ~30 раз в секунду.
+        // Один шаг жизни: движение, мячик и отрисовка окон.
         public void Animate()
         {
             if (Main == null || Art == null) return;
             double t = T();
-            float dt = (float)Math.Min(0.05, Math.Max(0.001, t - lastStep)); lastStep = t;
+            float dt = (float)Math.Min(0.065, Math.Max(0.001, t - lastStep)); lastStep = t;
             float u = Scale;
-            float x = GroundX();
-            float ground = Main.Top + H - 8 * u;
+            var position = Main.NativeLocation;
+            if (position.X != previousWindowLeft) exactGroundX = position.X + W / 2f;
+            float x = exactGroundX;
+            float ground = position.Y + H - 8 * u;
             area = Area();
             float minX = area.Left + 46 * u, maxX = area.Right - 46 * u;
             Point c = Cursor.Position;
 
             if (Mode >= 2 && t > ModeUntil) { if (Mode == 2) HideBall(); Mode = 0; Event = "gameover"; }
             float target = x; bool go = false;
-            int top = Main.Top;
-            if (Mode == 1)
+            int top = position.Y;
+            bool impEating = Ch.Id == PetChar.ImpId && t < EatUntil;
+            if (impEating) Speed = 0;
+            else if (Mode == 1)
             {
                 var monitor = walkMonitor == null ? null : Screen.AllScreens.FirstOrDefault(s => s.DeviceName == walkMonitor);
                 if (monitor != null && monitor.WorkingArea != area)
@@ -649,6 +744,13 @@ namespace Glasswing
                     target = right ? maxX : minX;
                     if (Math.Abs(x - target) < 6 * u)
                     {
+                        if (portalOpened == 0) portalOpened = t;
+                        if (t - portalOpened < PortalDuration)
+                        {
+                            Speed = 0;
+                            Main.SetBitmapAt(Render(), position.X, top);
+                            return;
+                        }
                         // Start just inside the new screen, including vertical and separated layouts.
                         x = right ? destination.Left + 46 * u : destination.Right - 46 * u;
                         top = Math.Max(destination.Top, destination.Bottom - H);
@@ -656,6 +758,8 @@ namespace Glasswing
                         minX = area.Left + 46 * u;
                         maxX = area.Right - 46 * u;
                         HopStart = t;
+                        portalOpened = 0;
+                        portalArrival = t;
                         Spawn(1, 0, 12, 0.7);
                         walkMonitor = null;
                         target = TargetX;
@@ -712,9 +816,12 @@ namespace Glasswing
             if (run) runPhase += dt * Math.Abs(Speed) / (300 * u) * Math.PI * 2 * 2.6;
 
             int left = (int)Math.Round(x - W / 2f);
+            top = HouseTop(top, x);
+            exactGroundX = x;
+            previousWindowLeft = left;
             formLeft = left;
-            if (Main.Left != left) Main.Left = left;
             Main.SetBitmapAt(Render(), left, top);
+            UpdateHouse(t);
 
             // мячик
             if (BallOn && BallWin != null)
@@ -744,7 +851,6 @@ namespace Glasswing
                 }
                 int bs = BallWin.Width;
                 var bp = new Point((int)(BX - bs / 2f), (int)(BY - bs / 2f));
-                if (BallWin.Location != bp) BallWin.Location = bp;
                 BallWin.SetBitmapAt(RenderBall(bs, r), bp.X, bp.Y);
             }
         }
@@ -814,8 +920,8 @@ namespace Glasswing
             float rb = runBlend;
             if (rb > 0.01f)
             {
-                hop = Math.Min(hop, -(float)(Math.Abs(Math.Sin(runPhase)) * 13 * u * rb));
-                sy *= 1f + (float)Math.Cos(runPhase * 2) * 0.05f * rb;
+                hop = Math.Min(hop, -(float)(Math.Abs(Math.Sin(runPhase)) * 4 * u * rb));
+                sy *= 1f + (float)Math.Cos(runPhase * 2) * 0.018f * rb;
             }
 
             if (t > nextBlink) { blinkUntil = t + 0.14; nextBlink = t + 2.5 + rnd.NextDouble() * 4; }
@@ -825,7 +931,7 @@ namespace Glasswing
             {
                 g.Clear(Color.Transparent);
                 g.SmoothingMode = SmoothingMode.AntiAlias;
-                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.InterpolationMode = Ch.Id == PetChar.ImpId ? InterpolationMode.Bilinear : InterpolationMode.HighQualityBicubic;
                 g.PixelOffsetMode = PixelOffsetMode.HighQuality;
                 g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                 // на бегу наклоняется вперёд
@@ -836,25 +942,8 @@ namespace Glasswing
                 float hx = gx, hy, headTop;
                 if (Ch.Id == PetChar.ImpId)
                 {
-                    bool dancing = !Sleeping && rb < 0.2f && MusicPlaying;
-                    string pose = Sleeping ? "sleep" : rb >= 0.2f ? "walk" : dancing ? "dance" : "idle";
-                    var sprite = Art.Parts[pose].Img;
-                    float ratio = Math.Min(150 * u / sprite.Width, 130 * u / sprite.Height);
-                    float width = sprite.Width * ratio;
-                    float height = sprite.Height * ratio * sy;
-                    if (dancing)
-                    {
-                        baseM.RotateAt((float)Math.Sin(t * 8) * 6, new PointF(gx, gy));
-                        g.Transform = baseM;
-                        hop -= (float)Math.Abs(Math.Sin(t * 8)) * 5 * u;
-                    }
-                    g.TranslateTransform(gx, gy + hop);
-                    g.ScaleTransform(Facing, 1);
-                    g.DrawImage(sprite, new RectangleF(-width / 2, -height, width, height));
-                    hy = gy - height * 0.53f + hop;
-                    headTop = gy - height + hop;
-                    g.Transform = baseM;
-                    if (eating) DrawFood(g, FoodKind, gx, hy + 8 * u, 26 * u, (float)((EatUntil - t) / 2.4));
+                    headTop = DrawImp(g, t, dt, gx, gy, u, hop, sy, eating);
+                    hy = (gy + headTop) / 2;
                 }
                 else
                 {
@@ -934,6 +1023,7 @@ namespace Glasswing
                 }
                 }
                 g.ResetTransform();
+                DrawPortal(g, t, gx, gy, u);
                 // частицы: сердечки, искры, «z»
                 for (int i = ps.Count - 1; i >= 0; i--)
                 {
@@ -957,9 +1047,107 @@ namespace Glasswing
                 BubbleRect = Rectangle.Empty;
                 if (Bubble != null && t > BubbleUntil) Bubble = null;
                 if (Bubble != null) DrawBubble(g, t, u, hx, headTop);
-                else if (t < HoverUntil) DrawInfo(g, u, hx, headTop);
             }
             return frame;
+        }
+
+        float DrawImp(Graphics g, double t, double dt, float gx, float gy, float u, float hop, float sy, bool eating)
+        {
+            var activity = CurrentActivity(t);
+            bool gesturing = activity != ImpActivity.None && !eating && !Sleeping;
+            bool walking = runBlend > 0.18f;
+            bool dancing = !walking && !eating && !Sleeping && !gesturing && MusicPlaying;
+            if (t >= nextLook)
+            {
+                nextLook = t + 2 + rnd.NextDouble() * 3;
+                impAttention = rnd.Next(3) == 0 ? (rnd.Next(2) == 0 ? -0.58f : 0.58f) : 0;
+            }
+            var cursor = Cursor.Position;
+            if (cursor != impLastCursor)
+            {
+                impLastCursor = cursor;
+                impTrackUntil = t + 1.8;
+            }
+            float offset = cursor.X - (formLeft + gx);
+            bool near = Main != null && t < impTrackUntil
+                && Math.Abs(cursor.Y - (Main.NativeLocation.Y + gy - 65 * u)) < 180 * u
+                && Math.Abs(offset) < 270 * u;
+            float look = walking ? Facing : near ? Math.Max(-0.72f, Math.Min(0.72f, offset / (150 * u))) : impAttention;
+            if (eating || dancing || Sleeping) look = 0;
+            impTurn += (look - impTurn) * Math.Min(1, (float)dt * (walking ? 15 : 7));
+            float angle = Math.Abs(impTurn);
+            float direction = impTurn < 0 ? -1 : 1;
+
+            double meal = eating ? Math.Max(0, 2.4 - (EatUntil - t)) : 0;
+            int bites = Math.Min(3, (int)(meal / 0.6));
+            double bitePhase = meal - bites * 0.6;
+            string pose;
+            if (eating) pose = bitePhase < 0.2 ? "eat_hold" : bitePhase < 0.34 ? "eat_bite" : "eat_chew";
+            else if (Sleeping) pose = "sleep";
+            else if (gesturing) pose = ActivityPose(activity, t);
+            else if (dancing) pose = "dance";
+            else if (walking && angle >= 0.8f) pose = "step" + (1 + (int)(runPhase / (Math.PI / 2)) % 4);
+            else if (angle >= 0.7f) pose = "profile";
+            else if (angle >= 0.26f) pose = "quarter";
+            else pose = t < blinkUntil ? "blink" : "front";
+
+            float spriteScale = PortalScale(t) * (Sleeping && homePerched ? 0.62f : 1);
+            if (Sleeping && homePerched) hop -= 9 * u;
+            float tilt = dancing ? (float)Math.Sin(t * 8) * 6 : walking ? Facing * 2 : impTurn * 3;
+            if (gesturing) ApplyActivityMotion(activity, t, u, ref hop, ref tilt);
+            if (dancing) hop -= (float)Math.Abs(Math.Sin(t * 8)) * 5 * u;
+            g.ResetTransform();
+            g.TranslateTransform(gx, gy + hop);
+            g.RotateTransform(tilt);
+            bool sideways = pose == "quarter" || pose == "profile" || pose.StartsWith("step", StringComparison.Ordinal);
+            float facing = sideways ? direction : 1;
+            if (impPose != pose || impPoseFacing != facing)
+            {
+                impPreviousPose = impPose;
+                impPreviousFacing = impPoseFacing;
+                impPose = pose;
+                impPoseFacing = facing;
+                impPoseSince = t;
+            }
+
+            double transition = pose == "blink" || impPreviousPose == "blink" ? 0.035 : walking ? 0.065 : 0.13;
+            float blend = impPreviousPose == null ? 1 : (float)Math.Max(0, Math.Min(1, (t - impPoseSince) / transition));
+            blend = blend * blend * (3 - 2 * blend);
+            if (blend < 1) DrawImpPose(g, impPreviousPose, impPreviousFacing, u, sy, spriteScale, 1 - blend);
+            var size = DrawImpPose(g, pose, facing, u, sy, spriteScale, blend);
+            float width = size.Width, height = size.Height;
+
+            if (eating)
+            {
+                float remaining = 1 - (bites + (bitePhase >= 0.34 ? 1 : 0)) / 4f;
+                float foodHeight = pose == "eat_bite" ? 0.52f : pose == "eat_chew" ? 0.49f : 0.42f;
+                DrawFood(g, FoodKind, width * 0.1f, -height * foodHeight, 20 * u, remaining);
+            }
+            else if (gesturing) DrawActivity(g, activity, t, u, height);
+            return gy + hop - height;
+        }
+
+        SizeF DrawImpPose(Graphics g, string pose, float facing, float u, float sy, float scale, float opacity)
+        {
+            var sprite = Art.Parts[pose].Img;
+            float ratio = scale * Math.Min(150 * u / sprite.Width, 130 * u / sprite.Height);
+            float width = sprite.Width * ratio, height = sprite.Height * ratio * sy;
+            if (opacity <= 0) return new SizeF(width, height);
+            var state = g.Save();
+            g.ScaleTransform(facing, 1);
+            if (opacity >= 1)
+                g.DrawImage(sprite, new RectangleF(-width / 2, -height, width, height));
+            else
+            {
+                using (var attributes = new ImageAttributes())
+                {
+                    attributes.SetColorMatrix(new ColorMatrix { Matrix33 = opacity });
+                    var points = new[] { new PointF(-width / 2, -height), new PointF(width / 2, -height), new PointF(-width / 2, 0) };
+                    g.DrawImage(sprite, points, new RectangleF(0, 0, sprite.Width, sprite.Height), GraphicsUnit.Pixel, attributes);
+                }
+            }
+            g.Restore(state);
+            return new SizeF(width, height);
         }
 
         void DrawBubble(Graphics g, double t, float u, float hx, float headTop)
@@ -995,46 +1183,10 @@ namespace Glasswing
             }
         }
 
-        // Подсказка при наведении: имя, возраст и шкалы.
-        void DrawInfo(Graphics g, float u, float hx, float headTop)
-        {
-            float pw = 190 * u, ph = 92 * u;
-            float px = Math.Max(4 * u, Math.Min(W - pw - 4 * u, hx - pw / 2));
-            float py = Math.Max(4 * u, headTop - ph - 10 * u);
-            var r = new RectangleF(px, py, pw, ph);
-            using (var p = Round(r, 10 * u))
-            {
-                using (var b = new SolidBrush(Color.FromArgb(215, 24, 26, 40))) g.FillPath(b, p);
-                using (var pen = new Pen(Color.FromArgb(120, Ch.Accent), 1f * u)) g.DrawPath(pen, p);
-            }
-            using (var f1 = new Font("Segoe UI Semibold", 13 * u, GraphicsUnit.Pixel))
-            using (var f2 = new Font("Segoe UI", 11 * u, GraphicsUnit.Pixel))
-            using (var w = new SolidBrush(Color.FromArgb(245, 245, 255)))
-            using (var m = new SolidBrush(Color.FromArgb(175, 205, 210, 235)))
-            {
-                g.DrawString(InfoTitle, f1, w, new RectangleF(px + 10 * u, py + 6 * u, pw - 16 * u, 18 * u), Ui.Left);
-                g.DrawString(InfoSub, f2, m, px + 10 * u, py + 24 * u);
-                string[] names = { "Сытость", "Настроение", "Рост" };
-                double[] vals = { Food / 100.0, Mood / 100.0, Grow };
-                Color[] cols = { Color.FromArgb(255, 196, 92), Color.FromArgb(255, 130, 180), Ch.Accent };
-                for (int i = 0; i < 3; i++)
-                {
-                    float yy = py + 44 * u + i * 15 * u;
-                    g.DrawString(names[i], f2, m, px + 10 * u, yy - 2 * u);
-                    var bar = new RectangleF(px + 82 * u, yy + 4 * u, pw - 94 * u, 5 * u);
-                    using (var bp = Round(bar, 2.5f * u)) using (var bb = new SolidBrush(Color.FromArgb(60, 255, 255, 255))) g.FillPath(bb, bp);
-                    float fw = (float)(bar.Width * Math.Max(0, Math.Min(1, vals[i])));
-                    if (fw > 5 * u)
-                    {
-                        using (var bp = Round(new RectangleF(bar.X, bar.Y, fw, bar.Height), 2.5f * u))
-                        using (var bb = new SolidBrush(cols[i])) g.FillPath(bb, bp);
-                    }
-                }
-            }
-        }
-
         public void Dispose()
         {
+            if (houseWindow != null) houseWindow.Dispose();
+            if (houseFrame != null) houseFrame.Dispose();
             if (BallWin != null) { BallWin.Dispose(); BallWin = null; }
             if (frame != null) { frame.Dispose(); frame = null; }
             if (ballFrame != null) { ballFrame.Dispose(); ballFrame = null; }

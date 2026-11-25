@@ -109,6 +109,7 @@ namespace Glasswing
         public override void SetHidden(bool hidden) { if (Running) card.Visible = !hidden; }
         // Последний прогноз для питомца: только читать. Пусто, если виджет выключен или ещё грузится.
         public WeatherData Data => Running ? card.Data : null;
+        public Rectangle? VisibleBounds => Running && card.Visible ? (Rectangle?)card.Bounds : null;
         public override void GlassChanged() { if (Running) card.ApplyGlass(); }
         public override bool HasGlass => true;
         public override void ResetPosition() { if (Running) card.ResetPosition(); }

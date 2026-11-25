@@ -104,16 +104,10 @@ namespace Glasswing
             {
                 Label = "Персонаж",
                 Value = () => Char == null ? "нет рисунков" : Char.Title,
-                Click = () =>
-                {
-                    var list = PetChar.Available();
-                    if (list.Count < 2) return;
-                    SetChar(list[(list.IndexOf(Char) + 1) % list.Count]);
-                },
             };
             yield return new Row { Label = "Поверх всех окон", On = () => TopMost, Click = () => TopMost = !TopMost };
             yield return new Row { Label = "Закрепить на месте", On = () => Locked, Click = () => Locked = !Locked };
-            yield return new Row { Label = "Гулять по экрану", On = () => Walk, Click = () => Walk = !Walk };
+            yield return new Row { Label = "Гулять по всем мониторам", On = () => Walk, Click = () => Walk = !Walk };
             yield return new Row { Label = "Напоминать о перерывах", On = () => Breaks, Click = () => Breaks = !Breaks };
             yield return new Row { Label = "Голос", Value = () => Voices[Voice], Click = () => { Voice = (Voice + 1) % Voices.Length; if (Running) life.VoiceSample(); } };
             yield return new Row { Label = "Замечать, что происходит", On = () => Aware, Click = () => Aware = !Aware };
@@ -338,6 +332,13 @@ namespace Glasswing
             mod = m;
             P = PetState.Load();
             ch = m.Char;
+            string previousId = Settings.GetString(m.Id, "Char", "kitsune");
+            if (previousId != ch.Id)
+            {
+                P.SwapChar(PetChar.Table.FirstOrDefault(c => c.Id == previousId), ch);
+                P.Save();
+                Settings.Set(m.Id, "Char", ch.Id);
+            }
             pet.Art = PetArt.Load(ch);
 
             // пока компьютер был выключен, питомец немного проголодался и соскучился
@@ -512,7 +513,7 @@ namespace Glasswing
 
         // «три хвоста», «восемь щупалец»
         string Tails(int n) { return (n < Numbers.Length ? Numbers[n] : n.ToString()) + " " + Plural(n, ch.Tail[0], ch.Tail[1], ch.Tail[2]); }
-        int TailCount(string st) { return pet.Art.Stages[st].Tails.Length; }
+        int TailCount(string st) { return ch.Id == PetChar.ImpId ? 1 : pet.Art.Stages[st].Tails.Length; }
 
         string StageName(string st)
         {
@@ -959,16 +960,9 @@ namespace Glasswing
             menu.Items.Add(new ToolStripMenuItem(F("Как {он|она}?"), null, (s, e) => HowIsIt()));
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("Дать имя…", null, (s, e) => ShowInput("name")));
-            var chars = new ToolStripMenuItem("Персонаж");
-            foreach (var c in PetChar.Available())
-            {
-                var cc = c;
-                chars.DropDownItems.Add(new ToolStripMenuItem(c.Title, null, (s, e) => mod.SetChar(cc)) { Checked = c == ch, ToolTipText = Cap(c.About) });
-            }
-            menu.Items.Add(chars);
             menu.Items.Add(new ToolStripMenuItem("Поверх всех окон", null, (s, e) => mod.TopMost = !mod.TopMost) { Checked = mod.TopMost });
             menu.Items.Add(new ToolStripMenuItem("Закрепить на месте", null, (s, e) => mod.Locked = !mod.Locked) { Checked = mod.Locked });
-            menu.Items.Add(new ToolStripMenuItem("Гулять по экрану", null, (s, e) => mod.Walk = !mod.Walk) { Checked = mod.Walk });
+            menu.Items.Add(new ToolStripMenuItem("Гулять по всем мониторам", null, (s, e) => mod.Walk = !mod.Walk) { Checked = mod.Walk });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("Центр управления " + App.Name, null, (s, e) => App.Core.ShowCenter(mod)));
             menu.Items.Add(new ToolStripMenuItem("Убрать «" + mod.Name + "»", null, (s, e) => App.Core.SetEnabled(mod, false)));
@@ -1004,8 +998,14 @@ namespace Glasswing
             if (idle < 300) activeMin += min; else activeMin = 0;
 
             // ночью засыпает, если его не трогают
-            if (!pet.Sleeping && night && (now - lastTouch).TotalMinutes > 10 && idle > 120) pet.Sleeping = true;
-            if (pet.Sleeping && !night && (now - lastTouch).TotalMinutes > 1 && idle < 5 && (now - lastTouch).TotalHours > 0.5) pet.Sleeping = false;
+            if (!pet.Sleeping && idle >= (night ? 120 : 900) && (now - lastTouch).TotalMinutes > 1)
+            {
+                pet.StopMode();
+                pet.Sleeping = true;
+            }
+            if (pet.Sleeping && idle < 5 && (now - lastTouch).TotalMinutes > 1) pet.Sleeping = false;
+            var music = mod.Aware ? Mod<NowPlayingModule>()?.Current : null;
+            pet.MusicPlaying = music != null && music.Has && music.Playing && idle < 900;
 
             // напоминания и таймеры
             var due = P.Reminders.Where(r => r.At <= now).ToList();
@@ -1051,8 +1051,12 @@ namespace Glasswing
                 nextWalk = now.AddSeconds(50 + rnd.Next(110));
                 var a = pet.Area();
                 float x = pet.GroundX();
+                var otherScreens = Screen.AllScreens.Where(s => s.WorkingArea != a).ToArray();
+                var destination = otherScreens.Length > 0 && rnd.Next(2) == 0
+                    ? otherScreens[rnd.Next(otherScreens.Length)] : null;
                 float nx = Math.Max(a.Left + S(80), Math.Min(a.Right - S(80), x + (rnd.Next(2) * 2 - 1) * S(120 + rnd.Next(380))));
-                pet.WalkTo(nx, rnd.NextDouble() < 0.3 ? 300 : 140);
+                if (destination != null) nx = destination.WorkingArea.Left + destination.WorkingArea.Width / 2;
+                pet.WalkTo(nx, rnd.NextDouble() < 0.3 ? 300 : 140, destination);
             }
             UpdateInfo();
             if (now.Second == 0) SaveState();

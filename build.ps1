@@ -26,7 +26,7 @@ $res.Add([Microsoft.CodeAnalysis.ResourceDescription]::new('Glasswing.app.ico', 
 # Питомцы: res/pets/<персонаж>/<файл> -> Glasswing.pets.<персонаж>.<файл>
 $petRoot = Join-Path $here 'res/pets'
 if (Test-Path $petRoot) {
-    foreach ($f in Get-ChildItem $petRoot -Recurse -File | Sort-Object FullName) {
+    foreach ($f in Get-ChildItem (Join-Path $petRoot 'imp') -Filter '*.png' -File | Sort-Object FullName) {
         $rel = $f.FullName.Substring($petRoot.Length).TrimStart('\', '/') -split '[\\/]'
         $petBytes = [IO.File]::ReadAllBytes($f.FullName)
         $res.Add([Microsoft.CodeAnalysis.ResourceDescription]::new("Glasswing.pets.$($rel[0]).$($f.Name)", [Func[IO.Stream]]{ New-Object IO.MemoryStream(,$petBytes) }.GetNewClosure(), $true))

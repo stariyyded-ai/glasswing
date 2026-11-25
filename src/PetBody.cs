@@ -19,6 +19,8 @@ namespace Glasswing
     // а здесь то, чего в рисунках нет: имя, характер и слова, которыми он говорит.
     class PetChar
     {
+        public const string ImpId = "imp";
+        public static readonly string[] ImpPoses = { "idle", "walk", "dance", "sleep" };
         public string Id, Title, DefName, About;
         public bool Female;
         public string Sound, Sound2;             // «кон», «мяф»: голос малыша
@@ -136,35 +138,22 @@ namespace Glasswing
         public static readonly string[] Faces = { "normal", "lookl", "lookr", "blink", "happy", "sad", "sleep", "eat", "talk" };
         static List<PetChar> avail;
 
-        // Те, чьи рисунки есть в сборке целиком. Порядок: сначала по таблице, потом остальные.
+        // Каталог содержит чертёнка, когда в сборку вошли все его позы.
         public static List<PetChar> Available()
         {
             if (avail != null) return avail;
             var names = new HashSet<string>(Assembly.GetExecutingAssembly().GetManifestResourceNames());
-            var ids = new List<string>();
-            foreach (var n in names)
-            {
-                if (!n.StartsWith(Prefix, StringComparison.Ordinal)) continue;
-                string rest = n.Substring(Prefix.Length);
-                int dot = rest.IndexOf('.');
-                if (dot <= 0) continue;
-                string id = rest.Substring(0, dot);
-                if (!ids.Contains(id) && Complete(id, names)) ids.Add(id);
-            }
             avail = new List<PetChar>();
-            foreach (var c in Table) if (ids.Contains(c.Id)) avail.Add(c);
-            foreach (var id in ids.OrderBy(x => x)) if (!Table.Any(c => c.Id == id)) avail.Add(Generic(id));
+            if (ImpPoses.All(pose => names.Contains(Prefix + ImpId + "." + pose + ".png")))
+            {
+                var imp = Generic(ImpId);
+                imp.Title = "Чертёнок";
+                imp.DefName = "Уголёк";
+                imp.AdultName = "чертёнок";
+                imp.About = "Любопытный чертёнок в большом худи";
+                avail.Add(imp);
+            }
             return avail;
-        }
-
-        static bool Complete(string id, HashSet<string> names)
-        {
-            if (!names.Contains(Prefix + id + ".manifest.json")) return false;
-            foreach (var st in Stages)
-                foreach (var part in new[] { "body", "head", "tail", "face_normal" })
-                    if (!names.Contains(Prefix + id + "." + st + "_" + part + ".png")) return false;
-            try { return PetArt.ReadManifest(id) != null; }
-            catch { return false; }
         }
 
         public static PetChar Find(string id)
@@ -221,6 +210,12 @@ namespace Glasswing
         public static PetArt Load(PetChar c)
         {
             var art = new PetArt(c);
+            if (c.Id == PetChar.ImpId)
+            {
+                foreach (string pose in PetChar.ImpPoses)
+                    art.Add(pose, new Dictionary<string, object>());
+                return art;
+            }
             var m = ReadManifest(c.Id);
             foreach (var st in PetChar.Stages)
             {
@@ -579,10 +574,17 @@ namespace Glasswing
             MaxSpeed = mode == 4 ? 400 : 320;
             if (mode == 2) StartBall();
         }
-        public void WalkTo(float x, float speed) { Mode = 1; TargetX = x; MaxSpeed = speed; ModeUntil = T() + 30; }
+        string walkMonitor;
+        public bool MusicPlaying;
+
+        public void WalkTo(float x, float speed, Screen monitor = null)
+        {
+            Mode = 1; TargetX = x; MaxSpeed = speed; ModeUntil = T() + 30;
+            walkMonitor = monitor?.DeviceName;
+        }
         public void StopMode() { if (Mode == 2) HideBall(); Mode = 0; Speed = 0; }
         public float GroundX() { return Main == null ? 0 : Main.Left + W / 2f; }
-        public Rectangle Area() { return Screen.FromPoint(new Point((int)GroundX(), Main.Top + H / 2)).WorkingArea; }
+        public Rectangle Area() { return Screen.FromPoint(new Point((int)GroundX(), Main.Top + H - (int)(40 * Scale))).WorkingArea; }
 
         void StartBall()
         {
@@ -636,7 +638,32 @@ namespace Glasswing
 
             if (Mode >= 2 && t > ModeUntil) { if (Mode == 2) HideBall(); Mode = 0; Event = "gameover"; }
             float target = x; bool go = false;
-            if (Mode == 1) { target = TargetX; go = true; }
+            int top = Main.Top;
+            if (Mode == 1)
+            {
+                var monitor = walkMonitor == null ? null : Screen.AllScreens.FirstOrDefault(s => s.DeviceName == walkMonitor);
+                if (monitor != null && monitor.WorkingArea != area)
+                {
+                    var destination = monitor.WorkingArea;
+                    bool right = destination.Left + destination.Width / 2 >= area.Left + area.Width / 2;
+                    target = right ? maxX : minX;
+                    if (Math.Abs(x - target) < 6 * u)
+                    {
+                        // Start just inside the new screen, including vertical and separated layouts.
+                        x = right ? destination.Left + 46 * u : destination.Right - 46 * u;
+                        top = Math.Max(destination.Top, destination.Bottom - H);
+                        area = destination;
+                        minX = area.Left + 46 * u;
+                        maxX = area.Right - 46 * u;
+                        HopStart = t;
+                        Spawn(1, 0, 12, 0.7);
+                        walkMonitor = null;
+                        target = TargetX;
+                    }
+                }
+                else target = TargetX;
+                go = true;
+            }
             else if (Mode == 2 && BallOn)
             {
                 target = BX; go = Math.Abs(BX - x) > 30 * u;
@@ -687,7 +714,7 @@ namespace Glasswing
             int left = (int)Math.Round(x - W / 2f);
             formLeft = left;
             if (Main.Left != left) Main.Left = left;
-            Main.SetBitmapAt(Render(), left, Main.Top);
+            Main.SetBitmapAt(Render(), left, top);
 
             // мячик
             if (BallOn && BallWin != null)
@@ -806,6 +833,31 @@ namespace Glasswing
                 baseM.RotateAt(Facing * 9f * rb * (float)(0.8 + 0.2 * Math.Cos(runPhase)), new PointF(gx, gy));
                 g.Transform = baseM;
 
+                float hx = gx, hy, headTop;
+                if (Ch.Id == PetChar.ImpId)
+                {
+                    bool dancing = !Sleeping && rb < 0.2f && MusicPlaying;
+                    string pose = Sleeping ? "sleep" : rb >= 0.2f ? "walk" : dancing ? "dance" : "idle";
+                    var sprite = Art.Parts[pose].Img;
+                    float ratio = Math.Min(150 * u / sprite.Width, 130 * u / sprite.Height);
+                    float width = sprite.Width * ratio;
+                    float height = sprite.Height * ratio * sy;
+                    if (dancing)
+                    {
+                        baseM.RotateAt((float)Math.Sin(t * 8) * 6, new PointF(gx, gy));
+                        g.Transform = baseM;
+                        hop -= (float)Math.Abs(Math.Sin(t * 8)) * 5 * u;
+                    }
+                    g.TranslateTransform(gx, gy + hop);
+                    g.ScaleTransform(Facing, 1);
+                    g.DrawImage(sprite, new RectangleF(-width / 2, -height, width, height));
+                    hy = gy - height * 0.53f + hop;
+                    headTop = gy - height + hop;
+                    g.Transform = baseM;
+                    if (eating) DrawFood(g, FoodKind, gx, hy + 8 * u, 26 * u, (float)((EatUntil - t) / 2.4));
+                }
+                else
+                {
                 string st = Stage;
                 var stage = Art.Stages[st];
                 // тень на «полу»
@@ -847,7 +899,7 @@ namespace Glasswing
                 DrawPart(g, st + "_body", k);
                 g.Transform = baseM;
                 // голова
-                float hx = gx, hy = gy + stage.Neck * k * sy + hop + (float)(Math.Sin(t * br + 0.6) * 1.2 * u);
+                hy = gy + stage.Neck * k * sy + hop + (float)(Math.Sin(t * br + 0.6) * 1.2 * u);
                 float tilt = (float)(Math.Sin(t * 0.7) * 2.0);
                 if (happy) tilt = (float)(Math.Sin(t * 5) * 6);
                 if (sad) tilt = 5f;
@@ -871,7 +923,7 @@ namespace Glasswing
                 DrawPart(g, st + "_face_" + face, k);
                 g.Transform = baseM;
                 float R = stage.R * k;
-                float headTop = hy - R * 1.9f;
+                headTop = hy - R * 1.9f;
 
                 // еда у мордочки
                 if (eating)
@@ -879,6 +931,7 @@ namespace Glasswing
                     float left = (float)((EatUntil - t) / 2.4);
                     float bites = (float)Math.Ceiling(left * 4) / 4f;
                     DrawFood(g, FoodKind, hx - R * 0.15f, hy + R * 0.95f, 26 * u, bites);
+                }
                 }
                 g.ResetTransform();
                 // частицы: сердечки, искры, «z»

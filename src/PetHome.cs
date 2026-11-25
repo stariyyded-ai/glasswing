@@ -128,7 +128,7 @@ namespace Glasswing
             if (houseStage == 0) return;
 
             var bounds = HouseBounds(home);
-            if (houseWindow == null) houseWindow = new PetHouseWindow { Text = "Домик Уголька", Bounds = bounds };
+            if (houseWindow == null) houseWindow = new PetHouseWindow { Text = "Шалаш Уголька", Bounds = bounds };
             if (houseWindow.Visible && houseBounds == bounds && houseWindow.Tag is int
                 && (int)houseWindow.Tag == houseStage) return;
             if (houseFrame == null || houseFrame.Size != bounds.Size)
@@ -152,37 +152,54 @@ namespace Glasswing
 
         static void DrawHouse(Graphics g, int stage)
         {
-            using (var shadow = new SolidBrush(Color.FromArgb(75, 20, 12, 34)))
-            using (var wood = new SolidBrush(Color.FromArgb(247, 77, 42, 48)))
-            using (var gold = new SolidBrush(Color.FromArgb(255, 196, 108)))
-            using (var beam = new Pen(Color.FromArgb(230, 192, 117, 98), 2))
+            using (var shadow = new SolidBrush(Color.FromArgb(95, 20, 12, 34)))
+            using (var bed = new SolidBrush(Color.FromArgb(242, 147, 89, 116)))
+            using (var stitching = new Pen(Color.FromArgb(220, 239, 163, 159), 1.5f))
+            using (var branch = new Pen(Color.FromArgb(255, 139, 91, 66), 4.5f))
             {
-                g.FillEllipse(shadow, 7, 109, 146, 14);
-                g.FillRectangle(wood, 20, 106, 118, 10);
-                g.DrawLine(beam, 22, 107, 136, 107);
+                branch.StartCap = branch.EndCap = LineCap.Round;
+                g.FillEllipse(shadow, 5, 108, 148, 15);
+                g.FillEllipse(bed, 23, 101, 112, 15);
+                g.DrawArc(stitching, 27, 102, 104, 10, 10, 160);
                 if (stage < 2) return;
-                using (var wall = new LinearGradientBrush(new Rectangle(25, 46, 108, 62),
-                    Color.FromArgb(246, 123, 67, 104), Color.FromArgb(251, 69, 39, 68), 90f))
-                    g.FillRectangle(wall, 25, 46, 108, 62);
-                g.DrawRectangle(beam, 25, 46, 108, 62);
-                if (stage < 3) return;
-                g.FillRectangle(wood, 106, 18, 15, 34);
-                using (var roof = new SolidBrush(Color.FromArgb(250, 82, 49, 110)))
-                    g.FillPolygon(roof, new[] { new Point(14, 53), new Point(79, 11), new Point(144, 53) });
-                g.DrawLines(beam, new[] { new Point(14, 53), new Point(79, 11), new Point(144, 53) });
-                g.FillEllipse(gold, 71, 33, 16, 16);
-                g.FillRectangle(wood, 64, 72, 30, 36);
-                g.FillEllipse(wood, 64, 60, 30, 25);
-                g.FillEllipse(gold, 86, 87, 4, 4);
-                g.FillRectangle(gold, 35, 64, 17, 20);
-                g.FillRectangle(gold, 106, 64, 17, 20);
+                if (stage == 3)
+                {
+                    using (var leaves = new LinearGradientBrush(new Rectangle(9, 17, 140, 93),
+                        Color.FromArgb(255, 118, 125, 70), Color.FromArgb(255, 46, 63, 54), 76f))
+                    using (var opening = new LinearGradientBrush(new Rectangle(35, 30, 88, 81),
+                        Color.FromArgb(255, 37, 27, 41), Color.FromArgb(255, 94, 54, 49), 90f))
+                    {
+                        g.FillPolygon(leaves, new[] { new Point(7, 109), new Point(27, 66), new Point(54, 40),
+                            new Point(78, 16), new Point(105, 38), new Point(126, 69), new Point(150, 109) });
+                        g.FillPolygon(opening, new[] { new Point(34, 110), new Point(79, 33), new Point(124, 110) });
+                    }
+                    using (var twig = new Pen(Color.FromArgb(150, 178, 142, 88), 1.5f))
+                    {
+                        for (int i = 0; i < 5; i++)
+                        {
+                            g.DrawLine(twig, 15 + 11 * i, 102, 52 + 5 * i, 46 - 5 * i);
+                            g.DrawLine(twig, 143 - 10 * i, 103, 106 - 5 * i, 45 - 5 * i);
+                        }
+                    }
+                    g.FillEllipse(bed, 40, 101, 79, 13);
+                    g.DrawArc(stitching, 43, 102, 73, 8, 10, 160);
+                    using (var glow = new SolidBrush(Color.FromArgb(255, 237, 166, 88)))
+                        g.FillEllipse(glow, 112, 87, 9, 12);
+                }
+                g.DrawLine(branch, 25, 110, 88, 9);
+                g.DrawLine(branch, 135, 110, 69, 10);
+                g.DrawLine(stitching, 72, 19, 84, 23);
+                g.DrawLine(stitching, 72, 23, 84, 27);
             }
         }
 
         float PortalScale(double t)
         {
-            if (portalOpened > 0) return Math.Max(0.06f, 1 - (float)((t - portalOpened) / PortalDuration));
-            return Math.Min(1, 0.06f + (float)((t - portalArrival) / PortalDuration));
+            bool leaving = portalOpened > 0;
+            float progress = Math.Max(0, Math.Min(1,
+                (float)((t - (leaving ? portalOpened : portalArrival)) / PortalDuration)));
+            float eased = progress * progress * (3 - 2 * progress);
+            return leaving ? 1 - .94f * eased : .06f + .94f * eased;
         }
 
         void DrawPortal(Graphics g, double t, float gx, float gy, float u)

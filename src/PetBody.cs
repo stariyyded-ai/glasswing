@@ -384,6 +384,9 @@ namespace Glasswing
         float impTurn, impAttention;
         double nextLook, impTrackUntil;
         Point impLastCursor;
+        string impPose, impPreviousPose;
+        float impPoseFacing = 1, impPreviousFacing = 1;
+        double impPoseSince;
         Rectangle area;
         Bitmap ballFrame;
         readonly Matrix baseM = new Matrix();
@@ -1003,20 +1006,30 @@ namespace Glasswing
             else if (angle >= 0.26f) pose = "quarter";
             else pose = t < blinkUntil ? "blink" : "front";
 
-            var sprite = Art.Parts[pose].Img;
-            float ratio = Math.Min(150 * u / sprite.Width, 130 * u / sprite.Height);
-            float width = sprite.Width * ratio, height = sprite.Height * ratio * sy;
-            float portalScale = PortalScale(t);
-            width *= portalScale;
-            height *= portalScale;
+            float spriteScale = PortalScale(t) * (Sleeping && homePerched ? 0.62f : 1);
+            if (Sleeping && homePerched) hop -= 9 * u;
             float tilt = dancing ? (float)Math.Sin(t * 8) * 6 : walking ? Facing * 2 : impTurn * 3;
             if (dancing) hop -= (float)Math.Abs(Math.Sin(t * 8)) * 5 * u;
             g.ResetTransform();
             g.TranslateTransform(gx, gy + hop);
             g.RotateTransform(tilt);
             bool sideways = pose == "quarter" || pose == "profile" || pose.StartsWith("step", StringComparison.Ordinal);
-            g.ScaleTransform(sideways ? direction : 1, 1);
-            g.DrawImage(sprite, new RectangleF(-width / 2, -height, width, height));
+            float facing = sideways ? direction : 1;
+            if (impPose != pose || impPoseFacing != facing)
+            {
+                impPreviousPose = impPose;
+                impPreviousFacing = impPoseFacing;
+                impPose = pose;
+                impPoseFacing = facing;
+                impPoseSince = t;
+            }
+
+            double transition = pose == "blink" || impPreviousPose == "blink" ? 0.035 : walking ? 0.065 : 0.13;
+            float blend = impPreviousPose == null ? 1 : (float)Math.Max(0, Math.Min(1, (t - impPoseSince) / transition));
+            blend = blend * blend * (3 - 2 * blend);
+            if (blend < 1) DrawImpPose(g, impPreviousPose, impPreviousFacing, u, sy, spriteScale, 1 - blend);
+            var size = DrawImpPose(g, pose, facing, u, sy, spriteScale, blend);
+            float width = size.Width, height = size.Height;
 
             if (eating)
             {
@@ -1025,6 +1038,29 @@ namespace Glasswing
                 DrawFood(g, FoodKind, width * 0.1f, -height * foodHeight, 20 * u, remaining);
             }
             return gy + hop - height;
+        }
+
+        SizeF DrawImpPose(Graphics g, string pose, float facing, float u, float sy, float scale, float opacity)
+        {
+            var sprite = Art.Parts[pose].Img;
+            float ratio = scale * Math.Min(150 * u / sprite.Width, 130 * u / sprite.Height);
+            float width = sprite.Width * ratio, height = sprite.Height * ratio * sy;
+            if (opacity <= 0) return new SizeF(width, height);
+            var state = g.Save();
+            g.ScaleTransform(facing, 1);
+            if (opacity >= 1)
+                g.DrawImage(sprite, new RectangleF(-width / 2, -height, width, height));
+            else
+            {
+                using (var attributes = new ImageAttributes())
+                {
+                    attributes.SetColorMatrix(new ColorMatrix { Matrix33 = opacity });
+                    var points = new[] { new PointF(-width / 2, -height), new PointF(width / 2, -height), new PointF(-width / 2, 0) };
+                    g.DrawImage(sprite, points, new RectangleF(0, 0, sprite.Width, sprite.Height), GraphicsUnit.Pixel, attributes);
+                }
+            }
+            g.Restore(state);
+            return new SizeF(width, height);
         }
 
         void DrawBubble(Graphics g, double t, float u, float hx, float headTop)

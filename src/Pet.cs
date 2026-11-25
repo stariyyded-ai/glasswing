@@ -324,6 +324,7 @@ namespace Glasswing
         float? homeX;
         bool hidden;
         Point savedPos;
+        bool sleepAtShelter;
 
         static int S(double v) { return Ui.S(v); }
 
@@ -538,6 +539,7 @@ namespace Glasswing
         void Touch()
         {
             lastTouch = DateTime.Now;
+            sleepAtShelter = false;
             if (pet.Sleeping) { pet.Sleeping = false; SayMood("wake"); }
         }
 
@@ -701,7 +703,7 @@ namespace Glasswing
             else if (ev == "homebuilt")
             {
                 Settings.Set(mod.Id, "HouseBuilt", true);
-                if (pet.Bubble == null) Say("Готово! Теперь у меня есть домик.");
+                if (pet.Bubble == null && !sleepAtShelter) Say("Готово! Теперь у меня есть шалаш.");
             }
         }
 
@@ -971,10 +973,15 @@ namespace Glasswing
             var screens = Screen.AllScreens.Where(screen => screen.WorkingArea != pet.Area()).ToArray();
             if (pet.HomeScreen() != null)
             {
-                menu.Items.Add(new ToolStripMenuItem("Отправить домой", null, (s, e) =>
+                menu.Items.Add(new ToolStripMenuItem("Отправить в шалаш", null, (s, e) =>
                 {
                     pet.StopMode();
                     pet.WalkHome();
+                }) { Enabled = !mod.Locked });
+                menu.Items.Add(new ToolStripMenuItem("Уложить спать в шалаше", null, (s, e) =>
+                {
+                    pet.StopMode();
+                    sleepAtShelter = pet.WalkHome();
                 }) { Enabled = !mod.Locked });
             }
             if (screens.Length > 0)
@@ -1029,18 +1036,20 @@ namespace Glasswing
 
             double idle = PetIdle.Seconds();
             if (idle < 300) activeMin += min; else activeMin = 0;
+            if (sleepAtShelter && pet.HomeScreen() == null) sleepAtShelter = false;
 
             // ночью засыпает, если его не трогают
-            if (!hidden && !pet.Sleeping && idle >= (night ? 120 : 900) && (now - lastTouch).TotalMinutes > 1)
+            if (!hidden && !pet.Sleeping && (sleepAtShelter ||
+                (idle >= (night ? 120 : 900) && (now - lastTouch).TotalMinutes > 1)))
             {
-                if (mod.Walk && !mod.Locked && pet.HomeScreen() != null && !pet.AtHome())
+                if ((sleepAtShelter || mod.Walk) && !mod.Locked && pet.HomeScreen() != null && !pet.AtHome())
                 {
                     if (pet.Mode == 0) pet.WalkHome();
                 }
                 else if (pet.Mode == 0 && (pet.HomeScreen() == null || mod.Locked || !mod.Walk || pet.HasHouse))
                     pet.Sleeping = true;
             }
-            if (pet.Sleeping && idle < 5 && (now - lastTouch).TotalMinutes > 1) pet.Sleeping = false;
+            if (pet.Sleeping && !sleepAtShelter && idle < 5 && (now - lastTouch).TotalMinutes > 1) pet.Sleeping = false;
             var music = mod.Aware ? Mod<NowPlayingModule>()?.Current : null;
             pet.MusicPlaying = music != null && music.Has && music.Playing && idle < 900;
 

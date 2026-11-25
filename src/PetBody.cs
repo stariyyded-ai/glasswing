@@ -20,7 +20,11 @@ namespace Glasswing
     class PetChar
     {
         public const string ImpId = "imp";
-        public static readonly string[] ImpPoses = { "idle", "walk", "dance", "sleep" };
+        public static readonly string[] ImpPoses =
+        {
+            "front", "blink", "quarter", "profile", "step1", "step2", "step3", "step4",
+            "dance", "sleep", "eat_hold", "eat_bite", "eat_chew"
+        };
         public string Id, Title, DefName, About;
         public bool Female;
         public string Sound, Sound2;             // «кон», «мяф»: голос малыша
@@ -377,6 +381,9 @@ namespace Glasswing
         bool grab;
         float gdx, gdy;
         double runPhase, lastStep, nextKick, nextJump;
+        float impTurn, impAttention;
+        double nextLook, impTrackUntil;
+        Point impLastCursor;
         Rectangle area;
         Bitmap ballFrame;
         readonly Matrix baseM = new Matrix();
@@ -639,7 +646,9 @@ namespace Glasswing
             if (Mode >= 2 && t > ModeUntil) { if (Mode == 2) HideBall(); Mode = 0; Event = "gameover"; }
             float target = x; bool go = false;
             int top = Main.Top;
-            if (Mode == 1)
+            bool impEating = Ch.Id == PetChar.ImpId && t < EatUntil;
+            if (impEating) Speed = 0;
+            else if (Mode == 1)
             {
                 var monitor = walkMonitor == null ? null : Screen.AllScreens.FirstOrDefault(s => s.DeviceName == walkMonitor);
                 if (monitor != null && monitor.WorkingArea != area)
@@ -836,25 +845,8 @@ namespace Glasswing
                 float hx = gx, hy, headTop;
                 if (Ch.Id == PetChar.ImpId)
                 {
-                    bool dancing = !Sleeping && rb < 0.2f && MusicPlaying;
-                    string pose = Sleeping ? "sleep" : rb >= 0.2f ? "walk" : dancing ? "dance" : "idle";
-                    var sprite = Art.Parts[pose].Img;
-                    float ratio = Math.Min(150 * u / sprite.Width, 130 * u / sprite.Height);
-                    float width = sprite.Width * ratio;
-                    float height = sprite.Height * ratio * sy;
-                    if (dancing)
-                    {
-                        baseM.RotateAt((float)Math.Sin(t * 8) * 6, new PointF(gx, gy));
-                        g.Transform = baseM;
-                        hop -= (float)Math.Abs(Math.Sin(t * 8)) * 5 * u;
-                    }
-                    g.TranslateTransform(gx, gy + hop);
-                    g.ScaleTransform(Facing, 1);
-                    g.DrawImage(sprite, new RectangleF(-width / 2, -height, width, height));
-                    hy = gy - height * 0.53f + hop;
-                    headTop = gy - height + hop;
-                    g.Transform = baseM;
-                    if (eating) DrawFood(g, FoodKind, gx, hy + 8 * u, 26 * u, (float)((EatUntil - t) / 2.4));
+                    headTop = DrawImp(g, t, dt, gx, gy, u, hop, sy, eating);
+                    hy = (gy + headTop) / 2;
                 }
                 else
                 {
@@ -960,6 +952,64 @@ namespace Glasswing
                 else if (t < HoverUntil) DrawInfo(g, u, hx, headTop);
             }
             return frame;
+        }
+
+        float DrawImp(Graphics g, double t, double dt, float gx, float gy, float u, float hop, float sy, bool eating)
+        {
+            bool walking = runBlend > 0.18f;
+            bool dancing = !walking && !eating && !Sleeping && MusicPlaying;
+            if (t >= nextLook)
+            {
+                nextLook = t + 2 + rnd.NextDouble() * 3;
+                impAttention = rnd.Next(3) == 0 ? (rnd.Next(2) == 0 ? -0.58f : 0.58f) : 0;
+            }
+            var cursor = Cursor.Position;
+            if (cursor != impLastCursor)
+            {
+                impLastCursor = cursor;
+                impTrackUntil = t + 1.8;
+            }
+            float offset = cursor.X - (formLeft + gx);
+            bool near = Main != null && t < impTrackUntil
+                && Math.Abs(cursor.Y - (Main.Top + gy - 65 * u)) < 180 * u
+                && Math.Abs(offset) < 270 * u;
+            float look = walking ? Facing : near ? Math.Max(-0.72f, Math.Min(0.72f, offset / (150 * u))) : impAttention;
+            if (eating || dancing || Sleeping) look = 0;
+            impTurn += (look - impTurn) * Math.Min(1, (float)dt * (walking ? 15 : 7));
+            float angle = Math.Abs(impTurn);
+            float direction = impTurn < 0 ? -1 : 1;
+
+            double meal = eating ? Math.Max(0, 2.4 - (EatUntil - t)) : 0;
+            int bites = Math.Min(3, (int)(meal / 0.6));
+            double bitePhase = meal - bites * 0.6;
+            string pose;
+            if (eating) pose = bitePhase < 0.2 ? "eat_hold" : bitePhase < 0.34 ? "eat_bite" : "eat_chew";
+            else if (Sleeping) pose = "sleep";
+            else if (dancing) pose = "dance";
+            else if (walking && angle >= 0.8f) pose = "step" + (1 + (int)(runPhase / (Math.PI / 2)) % 4);
+            else if (angle >= 0.7f) pose = "profile";
+            else if (angle >= 0.26f) pose = "quarter";
+            else pose = t < blinkUntil ? "blink" : "front";
+
+            var sprite = Art.Parts[pose].Img;
+            float ratio = Math.Min(150 * u / sprite.Width, 130 * u / sprite.Height);
+            float width = sprite.Width * ratio, height = sprite.Height * ratio * sy;
+            float tilt = dancing ? (float)Math.Sin(t * 8) * 6 : walking ? Facing * 2 : impTurn * 3;
+            if (dancing) hop -= (float)Math.Abs(Math.Sin(t * 8)) * 5 * u;
+            g.ResetTransform();
+            g.TranslateTransform(gx, gy + hop);
+            g.RotateTransform(tilt);
+            bool sideways = pose == "quarter" || pose == "profile" || pose.StartsWith("step", StringComparison.Ordinal);
+            g.ScaleTransform(sideways ? direction : 1, 1);
+            g.DrawImage(sprite, new RectangleF(-width / 2, -height, width, height));
+
+            if (eating)
+            {
+                float remaining = 1 - (bites + (bitePhase >= 0.34 ? 1 : 0)) / 4f;
+                float foodHeight = pose == "eat_bite" ? 0.52f : pose == "eat_chew" ? 0.49f : 0.42f;
+                DrawFood(g, FoodKind, width * 0.1f, -height * foodHeight, 20 * u, remaining);
+            }
+            return gy + hop - height;
         }
 
         void DrawBubble(Graphics g, double t, float u, float hx, float headTop)

@@ -355,6 +355,8 @@ namespace Glasswing
             pet.H = S(400);
             pet.Stage = GetStage();
             pet.Main = form;
+            pet.WeatherBounds = () => Mod<WeatherModule>()?.VisibleBounds;
+            pet.RestoreHouse(Settings.GetBool(m.Id, "HouseBuilt", false));
             UpdateInfo();
 
             form.Text = App.Name + ": " + m.Name;
@@ -404,6 +406,7 @@ namespace Glasswing
             if (hide) input.Hide();
             form.Visible = !hide;
             pet.SyncBall();
+            pet.SyncHouse();
         }
 
         public void ApplyTopMost() { if (restoreTop == null) form.TopMost = mod.TopMost; }
@@ -695,6 +698,11 @@ namespace Glasswing
             }
             else if (ev == "gameover") EndGame(false);
             else if (ev == "arrived") SaveState();
+            else if (ev == "homebuilt")
+            {
+                Settings.Set(mod.Id, "HouseBuilt", true);
+                if (pet.Bubble == null) Say("Готово! Теперь у меня есть домик.");
+            }
         }
 
         // ---------------------------------------------------------------- разговор
@@ -960,6 +968,31 @@ namespace Glasswing
             menu.Items.Add(new ToolStripMenuItem(F("Как {он|она}?"), null, (s, e) => HowIsIt()));
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("Дать имя…", null, (s, e) => ShowInput("name")));
+            var screens = Screen.AllScreens.Where(screen => screen.WorkingArea != pet.Area()).ToArray();
+            if (pet.HomeScreen() != null)
+            {
+                menu.Items.Add(new ToolStripMenuItem("Отправить домой", null, (s, e) =>
+                {
+                    pet.StopMode();
+                    pet.WalkHome();
+                }) { Enabled = !mod.Locked });
+            }
+            if (screens.Length > 0)
+            {
+                var portals = new ToolStripMenuItem("Портал на другой монитор") { Enabled = !mod.Locked };
+                foreach (var screen in screens)
+                {
+                    var destination = screen.WorkingArea;
+                    var number = Regex.Match(screen.DeviceName, @"\d+$").Value;
+                    string label = screen.Primary ? "Основной монитор" : "Монитор " + (number.Length > 0 ? number : screen.DeviceName);
+                    portals.DropDownItems.Add(new ToolStripMenuItem(label, null, (s, e) =>
+                    {
+                        pet.StopMode();
+                        pet.WalkTo(destination.Left + destination.Width / 2f, 350, screen);
+                    }));
+                }
+                menu.Items.Add(portals);
+            }
             menu.Items.Add(new ToolStripMenuItem("Поверх всех окон", null, (s, e) => mod.TopMost = !mod.TopMost) { Checked = mod.TopMost });
             menu.Items.Add(new ToolStripMenuItem("Закрепить на месте", null, (s, e) => mod.Locked = !mod.Locked) { Checked = mod.Locked });
             menu.Items.Add(new ToolStripMenuItem("Гулять по всем мониторам", null, (s, e) => mod.Walk = !mod.Walk) { Checked = mod.Walk });
@@ -998,10 +1031,14 @@ namespace Glasswing
             if (idle < 300) activeMin += min; else activeMin = 0;
 
             // ночью засыпает, если его не трогают
-            if (!pet.Sleeping && idle >= (night ? 120 : 900) && (now - lastTouch).TotalMinutes > 1)
+            if (!hidden && !pet.Sleeping && idle >= (night ? 120 : 900) && (now - lastTouch).TotalMinutes > 1)
             {
-                pet.StopMode();
-                pet.Sleeping = true;
+                if (mod.Walk && !mod.Locked && pet.HomeScreen() != null && !pet.AtHome())
+                {
+                    if (pet.Mode == 0) pet.WalkHome();
+                }
+                else if (pet.Mode == 0 && (pet.HomeScreen() == null || mod.Locked || !mod.Walk || pet.HasHouse))
+                    pet.Sleeping = true;
             }
             if (pet.Sleeping && idle < 5 && (now - lastTouch).TotalMinutes > 1) pet.Sleeping = false;
             var music = mod.Aware ? Mod<NowPlayingModule>()?.Current : null;
@@ -1049,6 +1086,7 @@ namespace Glasswing
             if (mod.Walk && !mod.Locked && !hidden && pet.Mode == 0 && !pet.Sleeping && pet.Bubble == null && P.Mood > 35 && now > nextWalk)
             {
                 nextWalk = now.AddSeconds(50 + rnd.Next(110));
+                if (!pet.HasHouse && !pet.AtHome() && pet.WalkHome()) return;
                 var a = pet.Area();
                 float x = pet.GroundX();
                 var otherScreens = Screen.AllScreens.Where(s => s.WorkingArea != a).ToArray();

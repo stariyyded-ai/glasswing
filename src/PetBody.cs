@@ -345,7 +345,7 @@ namespace Glasswing
     class Particle { public int Kind; public float X, Y, VX, VY, Size, Spin; public double Born, Life; }
 
     // Рисует питомца кадр за кадром: хвосты покачиваются, он дышит, моргает, смотрит на курсор.
-    class PetBody : IDisposable
+    partial class PetBody : IDisposable
     {
         readonly List<Particle> ps = new List<Particle>();
         readonly Random rnd = new Random();
@@ -589,7 +589,7 @@ namespace Glasswing
             Mode = 1; TargetX = x; MaxSpeed = speed; ModeUntil = T() + 30;
             walkMonitor = monitor?.DeviceName;
         }
-        public void StopMode() { if (Mode == 2) HideBall(); Mode = 0; Speed = 0; }
+        public void StopMode() { if (Mode == 2) HideBall(); Mode = 0; Speed = 0; portalOpened = 0; }
         public float GroundX() { return Main == null ? 0 : Main.Left + W / 2f; }
         public Rectangle Area() { return Screen.FromPoint(new Point((int)GroundX(), Main.Top + H - (int)(40 * Scale))).WorkingArea; }
 
@@ -658,6 +658,13 @@ namespace Glasswing
                     target = right ? maxX : minX;
                     if (Math.Abs(x - target) < 6 * u)
                     {
+                        if (portalOpened == 0) portalOpened = t;
+                        if (t - portalOpened < PortalDuration)
+                        {
+                            Speed = 0;
+                            Main.SetBitmapAt(Render(), Main.Left, top);
+                            return;
+                        }
                         // Start just inside the new screen, including vertical and separated layouts.
                         x = right ? destination.Left + 46 * u : destination.Right - 46 * u;
                         top = Math.Max(destination.Top, destination.Bottom - H);
@@ -665,6 +672,8 @@ namespace Glasswing
                         minX = area.Left + 46 * u;
                         maxX = area.Right - 46 * u;
                         HopStart = t;
+                        portalOpened = 0;
+                        portalArrival = t;
                         Spawn(1, 0, 12, 0.7);
                         walkMonitor = null;
                         target = TargetX;
@@ -721,9 +730,11 @@ namespace Glasswing
             if (run) runPhase += dt * Math.Abs(Speed) / (300 * u) * Math.PI * 2 * 2.6;
 
             int left = (int)Math.Round(x - W / 2f);
+            top = HouseTop(top, x);
             formLeft = left;
             if (Main.Left != left) Main.Left = left;
             Main.SetBitmapAt(Render(), left, top);
+            UpdateHouse(t);
 
             // мячик
             if (BallOn && BallWin != null)
@@ -926,6 +937,7 @@ namespace Glasswing
                 }
                 }
                 g.ResetTransform();
+                DrawPortal(g, t, gx, gy, u);
                 // частицы: сердечки, искры, «z»
                 for (int i = ps.Count - 1; i >= 0; i--)
                 {
@@ -994,6 +1006,9 @@ namespace Glasswing
             var sprite = Art.Parts[pose].Img;
             float ratio = Math.Min(150 * u / sprite.Width, 130 * u / sprite.Height);
             float width = sprite.Width * ratio, height = sprite.Height * ratio * sy;
+            float portalScale = PortalScale(t);
+            width *= portalScale;
+            height *= portalScale;
             float tilt = dancing ? (float)Math.Sin(t * 8) * 6 : walking ? Facing * 2 : impTurn * 3;
             if (dancing) hop -= (float)Math.Abs(Math.Sin(t * 8)) * 5 * u;
             g.ResetTransform();
@@ -1085,6 +1100,8 @@ namespace Glasswing
 
         public void Dispose()
         {
+            if (houseWindow != null) houseWindow.Dispose();
+            if (houseFrame != null) houseFrame.Dispose();
             if (BallWin != null) { BallWin.Dispose(); BallWin = null; }
             if (frame != null) { frame.Dispose(); frame = null; }
             if (ballFrame != null) { ballFrame.Dispose(); ballFrame = null; }
